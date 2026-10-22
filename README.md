@@ -27,8 +27,6 @@ AIに修正を任せるときなどに、開始前からある未コミット変
 
 ソースコードは[GitHub](https://github.com/shouhon/workscope)、実行ファイルは[GitHub Releases](https://github.com/shouhon/workscope/releases)で配布します。
 
-> 初回Releaseの公開準備中です。以下のScoop・ZIPによる導入は、配布ファイルを含むReleaseの公開後に利用できます。公開前は[ソースからビルド](#ソースからビルド)してください。
-
 ### Scoopを使う
 
 [Scoop](https://scoop.sh/)を導入済みのPowerShellで実行します。必要なGitもScoop経由で導入されます。

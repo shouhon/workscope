@@ -51,7 +51,7 @@
 ## 現在地
 
 - 完了した対象：M0・M1・M2・M3。開始記録と照合、日本語・JSON出力、終了コードを実装し、Windowsで要件6の全8項目を確認した。
-- 現行の開発計画に未完了工程はない。公開先はGitHubとGitHub Releases、ライセンスはMIT、導入はScoopまたはZIPに決定した。手元での配布物作成は[配布手順](distribution.md)を参照する。タグ・初回Releaseの公開と、公開後のScoop導入確認は未実施。署名は対象外である。
+- 現行の開発計画に未完了工程はない。公開先はGitHubとGitHub Releases、ライセンスはMIT、導入はScoopまたはZIPに決定した。配布物の作成と公開後の確認は[配布手順](distribution.md)、公開済みの版は[Releases](https://github.com/shouhon/workscope/releases)を参照する。署名は対象外である。
 
 ## M3の確認結果（2026-10-22）
 
