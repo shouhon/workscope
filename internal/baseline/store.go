@@ -64,7 +64,7 @@ func (r *repository) existing() ([]byte, error) {
 	decoder.DisallowUnknownFields()
 	err = decoder.Decode(&record)
 	var extra any
-	if err != nil || decoder.Decode(&extra) != io.EOF || record.Tool != "workscope" || record.SchemaVersion != SchemaVersion || record.ID == "" || record.Root != r.root || record.CreatedAt == "" || len(record.Allow) == 0 || record.Files == nil || record.Index == nil || !reflect.DeepEqual(record.Coverage, DefaultCoverage()) {
+	if err != nil || decoder.Decode(&extra) != io.EOF || !r.validRecord(record) {
 		return nil, fail("foreign_state", "開始記録の識別情報・保存形式・ルートが一致しません。既存の記録を保護して停止します。", stateName+"/"+recordName)
 	}
 	return data, nil
@@ -157,13 +157,15 @@ func Begin(dir string, names []string, replace bool) (Result, int) {
 		if previous != nil && !replace {
 			return fail("baseline_exists", "開始記録が既にあります。取り直す場合は --replace を指定してください。", stateName+"/"+recordName)
 		}
-		snapshot, err := r.stableSnapshot()
+		snapshot, err := r.stableSnapshot(nil)
+		if snapshot.Submodules != nil {
+			result.Coverage.Submodules = snapshot.Submodules
+		}
 		if err != nil {
-			var f *failure
-			if errors.As(err, &f) && f.issue.Code == "unsupported_submodule" {
-				result.Coverage.Submodules = snapshot.Submodules
-			}
 			return err
+		}
+		if len(snapshot.Issues) != 0 {
+			return &failure{issue: snapshot.Issues[0]}
 		}
 		confirmed, err := r.normalizeAllow(names)
 		if err != nil {

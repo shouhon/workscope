@@ -1,4 +1,4 @@
-// Package baseline はGitの作業領域を読み取り、開始記録を安全に保存する。
+// Package baseline はGitの作業領域を読み取り、開始記録の保存と照合を行う。
 package baseline
 
 const SchemaVersion = 1
@@ -62,25 +62,45 @@ type Record struct {
 	Index              []IndexEntry `json:"index"`
 }
 
+type Change struct {
+	Path         string `json:"path"`
+	Source       string `json:"source"`
+	Kind         string `json:"kind"`
+	BeforeKind   string `json:"before_kind"`
+	AfterKind    string `json:"after_kind"`
+	BeforeSHA256 string `json:"before_sha256"`
+	AfterSHA256  string `json:"after_sha256"`
+	WithinScope  bool   `json:"within_scope"`
+}
+
+type IndexChange struct {
+	Path        string       `json:"path"`
+	Source      string       `json:"source"`
+	Kind        string       `json:"kind"`
+	Before      []IndexEntry `json:"before"`
+	After       []IndexEntry `json:"after"`
+	WithinScope bool         `json:"within_scope"`
+}
+
 type Result struct {
-	SchemaVersion      int         `json:"schema_version"`
-	Tool               string      `json:"tool"`
-	Command            string      `json:"command"`
-	Status             string      `json:"status"`
-	BaselineID         string      `json:"baseline_id"`
-	Root               string      `json:"root"`
-	Coverage           Coverage    `json:"coverage"`
-	PreexistingChanges []GitChange `json:"preexisting_changes"`
-	ChangesSinceBegin  []any       `json:"changes_since_begin"`
-	IndexChanges       []any       `json:"index_changes"`
-	OutOfScopeChanges  []any       `json:"out_of_scope_changes"`
-	Issues             []Issue     `json:"issues"`
+	SchemaVersion      int           `json:"schema_version"`
+	Tool               string        `json:"tool"`
+	Command            string        `json:"command"`
+	Status             string        `json:"status"`
+	BaselineID         string        `json:"baseline_id"`
+	Root               string        `json:"root"`
+	Coverage           Coverage      `json:"coverage"`
+	PreexistingChanges []GitChange   `json:"preexisting_changes"`
+	ChangesSinceBegin  []Change      `json:"changes_since_begin"`
+	IndexChanges       []IndexChange `json:"index_changes"`
+	OutOfScopeChanges  []any         `json:"out_of_scope_changes"`
+	Issues             []Issue       `json:"issues"`
 }
 
 func NewResult() Result {
 	return Result{SchemaVersion: SchemaVersion, Tool: "workscope", Command: "begin", Status: "unknown",
-		Coverage: DefaultCoverage(), PreexistingChanges: []GitChange{}, ChangesSinceBegin: []any{},
-		IndexChanges: []any{}, OutOfScopeChanges: []any{}, Issues: []Issue{}}
+		Coverage: DefaultCoverage(), PreexistingChanges: []GitChange{}, ChangesSinceBegin: []Change{},
+		IndexChanges: []IndexChange{}, OutOfScopeChanges: []any{}, Issues: []Issue{}}
 }
 
 type failure struct {

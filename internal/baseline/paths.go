@@ -18,6 +18,13 @@ func samePath(a, b string) bool {
 	return a == b
 }
 
+func pathKey(name string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(name)
+	}
+	return name
+}
+
 func beneath(name, parent string) bool {
 	if parent == "." {
 		return true

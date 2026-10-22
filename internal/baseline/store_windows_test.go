@@ -60,6 +60,38 @@ func TestWindowsUnreadableFileNeverRecordsSuccess(t *testing.T) {
 	}
 }
 
+func TestWindowsCheckKeepsOutOfScopeChangesWithUnreadableFile(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "outside.txt", "開始時")
+	beginForCheck(t, dir, "future")
+	write(t, dir, "outside.txt", "範囲外の更新")
+	name, err := syscall.UTF16PtrFromString(filepath.Join(dir, "tracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil, syscall.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(handle)
+	result, code := Check(dir)
+	if code != 2 || result.Status != "unknown" || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Path != "tracked.txt" || len(result.ChangesSinceBegin) != 1 || result.ChangesSinceBegin[0].Path != "outside.txt" || len(result.OutOfScopeChanges) != 1 {
+		t.Fatalf("読取不能と範囲外の併存が不正: %d %+v", code, result)
+	}
+}
+
+func TestWindowsCheckAllowHandlesCaseAndSeparators(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "Src/日本語 空白.txt", "開始時")
+	beginForCheck(t, dir, `src\日本語 空白.txt`, `FUTURE\New`)
+	write(t, dir, "Src/日本語 空白.txt", "更新")
+	write(t, dir, "future/new/追加.txt", "未作成のディレクトリ配下")
+	result, code := Check(dir)
+	if code != 0 || len(result.ChangesSinceBegin) != 2 || len(result.OutOfScopeChanges) != 0 {
+		t.Fatalf("大小文字・区切りの照合失敗: %d %+v", code, result)
+	}
+}
+
 func TestWindowsAllowUsesActualNames(t *testing.T) {
 	dir := repo(t)
 	write(t, dir, "Src/日本語.txt", "本文")

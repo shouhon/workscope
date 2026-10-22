@@ -21,11 +21,19 @@ type snapshot struct {
 	Files      []Entry
 	Changes    []GitChange
 	Submodules []string
+	Issues     []Issue
 }
 
 func (r *repository) readEntry(name string) (Entry, error) {
 	entry := Entry{Path: name, Kind: "missing"}
 	if err := r.safeParents(name); err != nil {
+		var f *failure
+		if errors.As(err, &f) && f.issue.Code == "unsafe_parent" {
+			// 通常ファイルへ変わった親の配下は存在しない。リンクの親はたどらない。
+			if info, statErr := r.fs.Lstat(f.issue.Path); statErr == nil && info.Mode().IsRegular() {
+				return entry, nil
+			}
+		}
 		return entry, err
 	}
 	before, err := r.fs.Lstat(name)
@@ -81,8 +89,8 @@ func (r *repository) readEntry(name string) (Entry, error) {
 	return entry, nil
 }
 
-func (r *repository) collect() (snapshot, error) {
-	s := snapshot{Files: []Entry{}, Changes: []GitChange{}, Submodules: []string{}}
+func (r *repository) collect(previous []Entry) (snapshot, error) {
+	s := snapshot{Files: []Entry{}, Changes: []GitChange{}, Submodules: []string{}, Issues: []Issue{}}
 	var err error
 	s.Head, err = r.head()
 	if err != nil {
@@ -103,13 +111,38 @@ func (r *repository) collect() (snapshot, error) {
 			}
 			continue
 		}
-		if err := r.safeParents(entry.Path); err != nil {
-			return s, err
-		}
 		tracked[entry.Path] = true
 	}
-	if len(s.Submodules) != 0 {
-		return s, fail("unsupported_submodule", "サブモジュールは判定対象外のため、完全な開始記録を作れません。", s.Submodules[0])
+	for _, name := range s.Submodules {
+		s.Issues = append(s.Issues, Issue{"unsupported_submodule", "サブモジュールは判定対象外のため、完全な記録・照合はできません。", name})
+	}
+	inSubmodule := func(name string) bool {
+		for _, module := range s.Submodules {
+			if beneath(name, module) {
+				return true
+			}
+		}
+		return false
+	}
+	previousNames := []string{}
+	for _, entry := range previous {
+		if !tracked[entry.Path] && !inSubmodule(entry.Path) && r.safeParents(entry.Path) == nil {
+			previousNames = append(previousNames, entry.Path)
+		}
+	}
+	ignoredPrevious, err := r.ignored(previousNames)
+	if err != nil {
+		return s, err
+	}
+	// 記録済みの対象の削除を確認する。無視対象へ変わった場合は本文を開かない。
+	for _, entry := range previous {
+		if ignoredPrevious[entry.Path] {
+			s.Issues = append(s.Issues, Issue{"coverage_changed", "開始時の対象が無視された未追跡パスへ変わったため、内容を照合しません。", entry.Path})
+			continue
+		}
+		if !inSubmodule(entry.Path) {
+			tracked[entry.Path] = true
+		}
 	}
 	entries := map[string]Entry{}
 	trackedNames := make([]string, 0, len(tracked))
@@ -120,9 +153,10 @@ func (r *repository) collect() (snapshot, error) {
 	for _, name := range trackedNames {
 		entry, err := r.readEntry(name)
 		if err != nil {
-			return s, err
+			s.Issues = append(s.Issues, describeError(err))
+			continue
 		}
-		entries[name] = entry
+		entries[pathKey(name)] = entry
 	}
 	var walk func(string) error
 	walk = func(dir string) error {
@@ -145,9 +179,17 @@ func (r *repository) collect() (snapshot, error) {
 			if r.protected(name) {
 				continue
 			}
+			if inSubmodule(name) {
+				continue
+			}
 			info, err := r.fs.Lstat(name)
 			if err != nil {
-				return fail("snapshot_changed", "列挙中に対象を確認できなくなりました。", name)
+				if errors.Is(err, fs.ErrNotExist) {
+					s.Issues = append(s.Issues, Issue{"snapshot_changed", "列挙中に対象を確認できなくなりました。", name})
+				} else {
+					s.Issues = append(s.Issues, Issue{"unreadable_path", "対象を読み取れません。", name})
+				}
+				continue
 			}
 			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 				name += "/"
@@ -164,21 +206,23 @@ func (r *repository) collect() (snapshot, error) {
 			}
 			if strings.HasSuffix(name, "/") {
 				if err := walk(strings.TrimSuffix(name, "/")); err != nil {
-					return err
+					s.Issues = append(s.Issues, describeError(err))
 				}
 				continue
 			}
-			if _, exists := entries[name]; exists {
+			if _, exists := entries[pathKey(name)]; exists {
 				continue
 			}
 			entry, err := r.readEntry(name)
 			if err != nil {
-				return err
+				s.Issues = append(s.Issues, describeError(err))
+				continue
 			}
 			if entry.Kind == "missing" {
-				return fail("snapshot_changed", "列挙中に対象が削除されました。", name)
+				s.Issues = append(s.Issues, Issue{"snapshot_changed", "列挙中に対象が削除されました。", name})
+				continue
 			}
-			entries[name] = entry
+			entries[pathKey(name)] = entry
 			if !tracked[name] {
 				s.Changes = append(s.Changes, GitChange{name, "??"})
 			}
@@ -186,7 +230,7 @@ func (r *repository) collect() (snapshot, error) {
 		return nil
 	}
 	if err := walk("."); err != nil {
-		return s, err
+		s.Issues = append(s.Issues, describeError(err))
 	}
 	// 未追跡ファイルは上でリンクをたどらず列挙済み。Gitには追跡済みだけを問い合わせる。
 	data, err := git(r.root, nil, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all", "--no-renames")
@@ -207,6 +251,7 @@ func (r *repository) collect() (snapshot, error) {
 	}
 	sort.Slice(s.Files, func(i, j int) bool { return s.Files[i].Path < s.Files[j].Path })
 	sort.Slice(s.Changes, func(i, j int) bool { return s.Changes[i].Path < s.Changes[j].Path })
+	s.Issues = sortedIssues(s.Issues)
 	filtered := []IndexEntry{}
 	for _, entry := range s.Index {
 		if !r.protected(entry.Path) {
@@ -229,12 +274,12 @@ func (r *repository) collect() (snapshot, error) {
 	return s, nil
 }
 
-func (r *repository) stableSnapshot() (snapshot, error) {
-	first, err := r.collect()
+func (r *repository) stableSnapshot(previous []Entry) (snapshot, error) {
+	first, err := r.collect(previous)
 	if err != nil {
 		return first, err
 	}
-	second, err := r.collect()
+	second, err := r.collect(previous)
 	if err != nil {
 		return second, err
 	}
