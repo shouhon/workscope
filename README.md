@@ -51,6 +51,32 @@ JSONの固定項目と意味は[要件定義書](docs/requirements.md#5-出力�
 
 `index_changes` は `source: "index"`、パス、種類、範囲内かの判定と、記録時・現在のインデックス項目を `before`・`after` の配列で持ちます。`out_of_scope_changes` は範囲外だった両方の差分を含むため、同じパスが作業ファイルとインデックスにそれぞれ現れることがあります。各配列はパス順で安定させ、同じパスの範囲外差分は作業ファイル、インデックスの順です。
 
+## PowerShellで別の作業ディレクトリに使う
+
+このプロジェクトでビルドした後、実行ファイルの絶対パスを保持して対象へ移動します。次の対象パスと許容範囲は、自分のプロジェクトに合わせて変更してください。
+
+```powershell
+./scripts/build.ps1
+$workscope = (Resolve-Path -LiteralPath './dist/workscope.exe').Path
+Set-Location -LiteralPath 'D:\作業\対象プロジェクト'
+
+& $workscope begin --allow 'src\日本語 空白' --allow 'AGENTS.md'
+if ($LASTEXITCODE -ne 0) { throw '開始記録を作成できませんでした。' }
+
+# ここで対象プロジェクトを編集する
+& $workscope check --json
+$checkCode = $LASTEXITCODE
+switch ($checkCode) {
+    0 { '照合完了。範囲外の変更はありません。' }
+    1 { '範囲外の変更を確認してください。' }
+    2 { '判定不能の理由を確認してください。' }
+    64 { '引数を確認してください。' }
+    default { throw "予期しない終了コード: $checkCode" }
+}
+```
+
+worktreeでも、対象のworktree内から同じ手順で実行します。開始記録はそのworktreeのルートに保存され、`--allow` もそのルートを基準にします。JSONをプログラムへ渡す場合は、上の表示用 `switch` を使わず、CLIの標準出力と `$LASTEXITCODE` をそれぞれ受け取ってください。
+
 ## 開発環境
 
 - Windows 11
@@ -69,11 +95,13 @@ go run ./cmd/workscope --help
 go run ./cmd/workscope --version
 ```
 
-整形確認、静的検査、テスト、ビルド、実行ファイルの起動確認をまとめて実行します。
+整形確認、静的検査、テスト、ビルド、実行ファイルの受入確認をまとめて実行します。
 
 ```powershell
 ./scripts/verify.ps1
 ```
+
+受入確認は、専用の一時リポジトリとworktreeで実施します。実行ファイルの終了コード・JSON・日本語表示と、対象ファイル・インデックス・Git設定・開始記録の不変を確認し、検証データは終了時に除去します。ビルド済みの実行ファイルだけを再確認する場合は `./scripts/acceptance.ps1` を使います。要件8項目と検査の対応、Windowsでの確認範囲は[受入確認](docs/acceptance.md)を参照してください。
 
 ビルドだけを実行する場合は次を使います。
 
@@ -118,6 +146,7 @@ go build -mod=readonly -trimpath -o ./dist/workscope.exe ./cmd/workscope
 - [要件定義書](docs/requirements.md)：元の要件定義書を内容を変えずに移動した正本
 - [開発計画](docs/development-plan.md)：工程ごとの完成条件、確認方法、現在地
 - [構成と処理の境界](docs/architecture.md)：現在の構成と、後続実装で守る設計
+- [受入確認](docs/acceptance.md)：要件ごとの検査、Windowsでの結果と確認範囲
 - [エージェント向け指示](AGENTS.md)：変更範囲、必須検証、版番号の更新規則
 
 構成とコマンドは、[Goのモジュール定義](https://go.dev/doc/modules/gomod-ref)、[Goのコマンド仕様](https://pkg.go.dev/cmd/go)、[Goの実行環境の選択](https://go.dev/doc/toolchain)を参照しています。

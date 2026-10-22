@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -290,5 +291,47 @@ func TestCheckDoesNotTreatNewlyIgnoredBaselinePathAsDeleted(t *testing.T) {
 	requireFailure(t, result, code, "coverage_changed")
 	if code != 2 || len(result.ChangesSinceBegin) != 1 || result.ChangesSinceBegin[0].Path != ".gitignore" {
 		t.Fatalf("無視対象への変化を削除や変更なしと扱いました: %d %+v", code, result)
+	}
+}
+
+func TestComparisonPreservesControlCharactersThroughJSON(t *testing.T) {
+	// Windowsで作成できない改行入りの名前は、Gitの解析用データとして確認する。
+	inside, outside := "空白 日本語/改行\nタブ\t名前.txt", "空白 日本語2/改行\nタブ\t名前.txt"
+	beforeHash, afterHash := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	index, err := parseIndex([]byte("100644 " + strings.Repeat("a", 40) + " 0\t" + inside + "\x00" +
+		"100644 " + strings.Repeat("b", 40) + " 0\t" + outside + "\x00"))
+	if err != nil || len(index) != 2 {
+		t.Fatalf("複数の名前を解析できません: %+v %v", index, err)
+	}
+	preexisting, err := parseStatus([]byte(" M " + inside + "\x00 M " + outside + "\x00"))
+	if err != nil || len(preexisting) != 2 {
+		t.Fatalf("複数のGit状態を解析できません: %+v %v", preexisting, err)
+	}
+	record := Record{Allow: []Allowed{{"空白 日本語", "directory"}}, Index: index}
+	current := snapshot{Index: index}
+	for _, entry := range index {
+		record.Files = append(record.Files, Entry{Path: entry.Path, Kind: "file", SHA256: beforeHash})
+		current.Files = append(current.Files, Entry{Path: entry.Path, Kind: "file", SHA256: afterHash})
+	}
+	result := NewResult()
+	result.Command = "check"
+	result.PreexistingChanges = preexisting
+	result.compare(record, current)
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Result
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded.PreexistingChanges, preexisting) || len(decoded.ChangesSinceBegin) != 2 || len(decoded.OutOfScopeChanges) != 1 || len(decoded.IndexChanges) != 0 {
+		t.Fatalf("解析からJSONまでの名前や差分が不正です: %s", data)
+	}
+	for i, name := range []string{inside, outside} {
+		change := decoded.ChangesSinceBegin[i]
+		if change.Path != name || change.Kind != "modified" || change.WithinScope != (i == 0) || change.BeforeSHA256 != beforeHash || change.AfterSHA256 != afterHash {
+			t.Fatalf("改行・タブ入りの名前の範囲判定が不正です: %+v", change)
+		}
 	}
 }

@@ -49,6 +49,9 @@ try {
         throw '実行ファイルのヘルプ表示が不正です。'
     }
 
+    Write-Output '一時リポジトリで実行ファイルの受入確認を行っています。'
+    & (Join-Path $PSScriptRoot 'acceptance.ps1')
+
     Write-Output "検証に成功しました。$($versionText[0])"
 }
 finally {

@@ -1,0 +1,195 @@
+#requires -Version 7.0
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+if (-not $IsWindows) {
+    throw '実行ファイルの受入確認はWindowsで実行してください。'
+}
+$executable = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../dist/workscope.exe')).Path
+
+function Assert-Acceptance([bool] $Condition, [string] $Message) {
+    if (-not $Condition) { throw $Message }
+}
+
+function Invoke-Captured([string] $File, [string] $Directory, [string[]] $Arguments) {
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $File
+    $start.WorkingDirectory = $Directory
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $start.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    # 呼出元のGit設定用環境変数を、一時リポジトリへ持ち込まない。
+    foreach ($key in @($start.Environment.Keys)) {
+        if ($key.StartsWith('GIT_', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $null = $start.Environment.Remove($key)
+        }
+    }
+    $start.Environment['GIT_OPTIONAL_LOCKS'] = '0'
+    $start.Environment['GIT_TERMINAL_PROMPT'] = '0'
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        $null = $process.Start()
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        return @{ Code = $process.ExitCode; Text = $stdout.GetAwaiter().GetResult(); Error = $stderr.GetAwaiter().GetResult() }
+    }
+    finally { $process.Dispose() }
+}
+
+function Invoke-FixtureGit([string] $Directory, [string[]] $Arguments) {
+    $response = Invoke-Captured 'git' $Directory (@('--no-optional-locks', '-C', $Directory, '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false') + $Arguments)
+    Assert-Acceptance ($response.Code -eq 0) "一時リポジトリのGit操作に失敗しました: $($response.Error)"
+    return $response.Text.TrimEnd("`r", "`n")
+}
+
+function Write-Fixture([string] $Directory, [string] $Name, [string] $Text) {
+    $path = Join-Path $Directory $Name
+    $null = [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
+    [System.IO.File]::WriteAllText($path, $Text, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Invoke-JSON([string] $Directory, [string[]] $Arguments, [int] $Code, [string] $Status) {
+    $response = Invoke-Captured $executable $Directory ($Arguments + @('--json'))
+    Assert-Acceptance ($response.Code -eq $Code -and $response.Error -eq '') "終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
+    # Parseは後続のJSONや診断文も拒否する。ConvertFrom-Jsonだけで件数を判断しない。
+    $document = [System.Text.Json.JsonDocument]::Parse($response.Text)
+    try {
+        Assert-Acceptance ($document.RootElement.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) 'JSONがオブジェクト1件ではありません。'
+    }
+    finally { $document.Dispose() }
+    $data = ConvertFrom-Json -InputObject $response.Text -AsHashtable
+    foreach ($field in @('schema_version', 'tool', 'command', 'status', 'baseline_id', 'root', 'coverage', 'preexisting_changes', 'changes_since_begin', 'index_changes', 'out_of_scope_changes', 'issues')) {
+        Assert-Acceptance ($data.ContainsKey($field)) "JSONの固定項目 $field がありません。"
+    }
+    Assert-Acceptance ($data.schema_version -eq 1 -and $data.tool -ceq 'workscope' -and $data.command -ceq $Arguments[0] -and $data.status -ceq $Status) 'JSONの識別情報または状態が不正です。'
+    foreach ($field in @('preexisting_changes', 'changes_since_begin', 'index_changes', 'out_of_scope_changes', 'issues')) {
+        Assert-Acceptance ($data[$field] -is [array]) "$field が配列ではありません。"
+    }
+    return @{ Data = $data; Text = $response.Text }
+}
+
+function Get-ProtectedState([string] $Directory, [bool] $IncludeBaseline = $true) {
+    $paths = @('config.toml', '.gitignore', 'Src/変更 日本語.txt', 'Src/削除.txt', 'Src/追加 日本語.txt', 'Src2/別.txt', 'index-only.txt', '未追跡 空白.txt', '新規/配下/追加.txt', 'ignored/hidden.txt', '.git') |
+        ForEach-Object { Join-Path $Directory $_ }
+    $index = Invoke-FixtureGit $Directory @('rev-parse', '--path-format=absolute', '--git-path', 'index')
+    $gitDirectory = Invoke-FixtureGit $Directory @('rev-parse', '--absolute-git-dir')
+    $commonDirectory = Invoke-FixtureGit $Directory @('rev-parse', '--path-format=absolute', '--git-common-dir')
+    $config = Join-Path $commonDirectory 'config'
+    Assert-Acceptance ((Test-Path -LiteralPath $index -PathType Leaf) -and (Test-Path -LiteralPath $config -PathType Leaf)) '比較対象のインデックスまたは共通Git設定が見つかりません。'
+    $paths += @($index, $config, (Join-Path $gitDirectory 'HEAD'), (Join-Path $gitDirectory 'config.worktree'))
+    if ($IncludeBaseline) { $paths += Join-Path $Directory '.workscope/baseline.json' }
+    $hashes = [ordered]@{}
+    foreach ($path in $paths) {
+        $hashes[$path] = if (Test-Path -LiteralPath $path -PathType Leaf) {
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        } elseif (Test-Path -LiteralPath $path -PathType Container) { 'directory' } else { 'missing' }
+    }
+    return ConvertTo-Json -InputObject $hashes -Compress
+}
+
+# この実行で作った一時領域だけを使用し、利用者のリポジトリは操作しない。
+$temporary = [System.IO.Directory]::CreateTempSubdirectory('workscope-acceptance-').FullName
+try {
+    $emptyHooks = Join-Path $temporary '空のフック'
+    $null = [System.IO.Directory]::CreateDirectory($emptyHooks)
+    foreach ($mode in @('通常', 'worktree')) {
+        $primary = Join-Path $temporary "$mode/主 作業"
+        $null = [System.IO.Directory]::CreateDirectory($primary)
+        $null = Invoke-FixtureGit $primary @('init', '-q', '--initial-branch=main', "--template=$emptyHooks")
+        $null = Invoke-FixtureGit $primary @('config', 'core.autocrlf', 'false')
+        $null = Invoke-FixtureGit $primary @('config', 'core.hooksPath', $emptyHooks)
+        foreach ($name in @('config.toml', 'Src/変更 日本語.txt', 'Src/削除.txt', 'Src2/別.txt', 'index-only.txt')) {
+            Write-Fixture $primary $name '開始時の本文'
+        }
+        Write-Fixture $primary '.gitignore' "ignored/`n"
+        $null = Invoke-FixtureGit $primary @('add', '.')
+        $commit = @('-c', 'user.name=workscope-test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', '受入確認')
+        $null = Invoke-FixtureGit $primary $commit
+        $directory = $primary
+        if ($mode -eq 'worktree') {
+            $directory = Join-Path $temporary "$mode/追加 作業ツリー"
+            $null = Invoke-FixtureGit $primary @('worktree', 'add', '--detach', '-q', $directory)
+        }
+        $subdirectory = Join-Path $directory 'Src'
+        Write-Fixture $directory 'config.toml' '開始前の変更'
+        Write-Fixture $directory '未追跡 空白.txt' '開始前の未追跡'
+        Write-Fixture $directory 'ignored/hidden.txt' '照合しない本文'
+        $before = Get-ProtectedState $directory $false
+        $recorded = Invoke-JSON $subdirectory @('begin', '--allow', 'src\', '--allow', 'SRC', '--allow', '新規\配下') 0 'recorded'
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode のbeginが対象・Git状態を変更しました。"
+        Assert-Acceptance ($recorded.Data.coverage.complete -and $recorded.Data.preexisting_changes.Count -eq 2) "$mode の開始前の変更または照合範囲が不正です。"
+        $before = Get-ProtectedState $directory
+        $unchanged = Invoke-JSON $subdirectory @('check') 0 'within_scope'
+        Assert-Acceptance ($unchanged.Data.changes_since_begin.Count -eq 0 -and $unchanged.Data.index_changes.Count -eq 0) "$mode の開始前の変更を開始後の変更と扱いました。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の変更なしの照合が既存状態を変更しました。"
+
+        $before = Get-ProtectedState $directory
+        foreach ($argument in @('--help', '--version')) {
+            $response = Invoke-Captured $executable $subdirectory @($argument)
+            Assert-Acceptance ($response.Code -eq 0 -and $response.Error -eq '' -and $response.Text.Length -gt 0) "$argument の表示に失敗しました。"
+        }
+        $null = Invoke-JSON $subdirectory @('begin', '--allow', 'Src') 2 'unknown'
+        $null = Invoke-JSON $subdirectory @('begin', '--allow', '../範囲外') 64 'invalid_arguments'
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の表示・拒否したbeginが既存状態を変更しました。"
+
+        Write-Fixture $directory 'Src/変更 日本語.txt' '範囲内の変更'
+        Write-Fixture $directory 'Src/追加 日本語.txt' '範囲内の追加'
+        Remove-Item -LiteralPath (Join-Path $directory 'Src/削除.txt')
+        Write-Fixture $directory '新規/配下/追加.txt' '未作成パスの配下'
+        $before = Get-ProtectedState $directory
+        $within = Invoke-JSON $subdirectory @('check') 0 'within_scope'
+        Assert-Acceptance ($within.Data.changes_since_begin.Count -eq 4 -and $within.Data.out_of_scope_changes.Count -eq 0) "$mode の範囲内の追加・変更・削除を判定できません。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の範囲内照合が既存状態を変更しました。"
+
+        Write-Fixture $directory 'config.toml' '開始後の再編集'
+        Write-Fixture $directory 'Src2/別.txt' '似た名前の範囲外'
+        Write-Fixture $directory 'index-only.txt' 'インデックスだけに残す本文'
+        $null = Invoke-FixtureGit $directory @('add', 'config.toml', 'index-only.txt')
+        Write-Fixture $directory 'index-only.txt' '開始時の本文'
+        Write-Fixture $directory 'ignored/hidden.txt' '対象外の追加編集'
+        $before = Get-ProtectedState $directory
+        $outside = Invoke-JSON $subdirectory @('check') 1 'out_of_scope'
+        $again = Invoke-JSON $subdirectory @('check') 1 'out_of_scope'
+        Assert-Acceptance ($outside.Text -ceq $again.Text) "$mode の同一条件でJSONの並び順が変化しました。"
+        Assert-Acceptance ($outside.Data.changes_since_begin.Count -eq 6 -and $outside.Data.index_changes.Count -eq 2 -and $outside.Data.out_of_scope_changes.Count -eq 4) "$mode の再編集・範囲外・インデックスの集計が不正です。"
+        $expected = @('Src/追加 日本語.txt', 'Src/削除.txt', 'Src/変更 日本語.txt', '新規/配下/追加.txt')
+        foreach ($change in $outside.Data.changes_since_begin) {
+            Assert-Acceptance ($change.within_scope -eq ($expected -ccontains $change.path) -and -not $change.path.Contains('\')) "許容範囲またはパス区切りが不正です: $($change.path)"
+        }
+        $response = Invoke-Captured $executable $subdirectory @('check')
+        Assert-Acceptance ($response.Code -eq 1 -and $response.Error -eq '' -and $response.Text.Contains('範囲外の変更: 4件') -and $response.Text.Contains('開始前からあった変更: 2件')) "$mode の日本語表示が不正です。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の照合が対象・Git状態・開始記録を変更しました。"
+
+        $null = Invoke-FixtureGit $directory $commit
+        $before = Get-ProtectedState $directory
+        $unknown = Invoke-JSON $subdirectory @('check') 2 'unknown'
+        Assert-Acceptance (-not $unknown.Data.coverage.complete -and 'head_changed' -cin $unknown.Data.issues.code -and $unknown.Data.out_of_scope_changes.Count -gt 0) "$mode の判定不能と範囲外の併記が不正です。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の判定不能時に既存状態を変更しました。"
+
+        $before = Get-ProtectedState $directory $false
+        $replacement = Invoke-JSON $subdirectory @('begin', '--replace', '--allow', 'Src') 0 'recorded'
+        Assert-Acceptance ($replacement.Data.baseline_id -cne $recorded.Data.baseline_id) "$mode の明示的な取り直しが反映されません。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode の明示的な取り直しが対象・Git状態を変更しました。"
+        Write-Fixture $directory '.workscope/baseline.json' '{'
+        $before = Get-ProtectedState $directory
+        $null = Invoke-JSON $subdirectory @('check') 2 'unknown'
+        $null = Invoke-JSON $subdirectory @('begin', '--replace', '--allow', 'Src') 2 'unknown'
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の破損した開始記録を変更しました。"
+        Write-Output "受入確認に成功しました: $mode （終了コード0・1・2・64、JSON、日本語表示、非破壊性）"
+    }
+}
+finally {
+    # 作成した絶対パスと一時領域の境界を確認してから、自分の検証データだけを除去する。
+    $resolved = [System.IO.Path]::GetFullPath($temporary)
+    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [System.IO.Path]::GetFileName($resolved).StartsWith('workscope-acceptance-', [System.StringComparison]::Ordinal)) {
+        throw '受入確認用の一時領域を安全に特定できません。'
+    }
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
