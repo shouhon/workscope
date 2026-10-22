@@ -5,7 +5,7 @@
 - 製品の要件は [docs/requirements.md](docs/requirements.md) を正本とする。元の要件定義書を再作成したり、セットアップを全機能の実装完了として扱ったりしない。
 - 工程と現在地は [docs/development-plan.md](docs/development-plan.md)、構成と設計上の境界は [docs/architecture.md](docs/architecture.md) を参照する。
 - 日本語で回答、文書、利用者向け表示、意図を説明するコメントを書く。Goの識別子とコマンドは原語を使う。
-- 言語はGo。最低版は `go.mod` の `go` 指定を正本とする。モジュール名は公開先が決まるまで `workscope` を使い、架空のホスティング先を付けない。
+- 言語はGo。最低版は `go.mod` の `go` 指定を正本とする。ソースの公開先は `https://github.com/shouhon/workscope` とする。モジュール名は既存の `workscope` を維持する。
 - 標準ライブラリを優先する。外部依存を増やす場合は必要性と取得元を確認し、Goのコマンドで `go.mod`・`go.sum` を管理する。空の `go.sum` を作らない。
 - 実際に必要になった処理とテストだけを追加する。将来用の空パッケージや共通基盤を置かない。
 
@@ -20,6 +20,12 @@
 - 将来の状態保存も、明示的な `begin` の範囲に限定する。`check`、検査、ヘルプ、版表示は開始記録を更新しない。
 - `.git/`、worktreeの管理領域、`.workscope/` と、リンク先の外部ファイルを走査しない。詳細は要件定義書に従う。
 - `dist/`、`.cache/`、開始記録、秘密情報、ログをコミットしない。
+
+## 配布とライセンス
+
+- ソースコードはGitHub、Windows用の実行ファイルは同じリポジトリのGitHub Releasesで配布する。ライセンスはルートの `LICENSE` にあるMITとする。
+- 導入はScoopの定義URL、またはZIPの手動展開とする。`scripts/package.ps1` が必須検証後にZIP、Scoop定義、SHA-256一覧を `dist/` へ作成する。詳細と公開後の確認は [docs/distribution.md](docs/distribution.md) を正本とする。
+- 配布物の手元での作成と、タグ・Releaseの公開を分ける。公開には引き続き対象と操作を特定した明示依頼が必要であり、公開済みの同じ版へ別内容を差し替えない。
 
 ## 版番号の管理
 
