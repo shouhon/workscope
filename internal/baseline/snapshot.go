@@ -235,7 +235,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 	// 未追跡ファイルは上でリンクをたどらず列挙済み。Gitには追跡済みだけを問い合わせる。
 	data, err := git(r.root, nil, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all", "--no-renames")
 	if err != nil {
-		return s, fail("status_unreadable", "Gitの変更状態を読み取れません。", "")
+		return s, failGit("status_unreadable", "Gitの変更状態を読み取れません。", err)
 	}
 	changes, err := parseStatus(data)
 	if err != nil {

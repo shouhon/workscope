@@ -20,6 +20,14 @@ workscope begin --replace --allow AGENTS.md --allow src
 
 状態保存先をGitから除外するには、利用者が `.gitignore` に `/.workscope/` を追加してください。CLIは自動変更しません。`--json` では標準出力にJSONオブジェクト1件を出力します。記録成功は0、記録不能は2、引数の誤りは64で終了します。
 
+## Gitを参照できない場合
+
+`begin` と `check` は、Gitの失敗時に `unknown` と終了コード2を返します。通常表示とJSONの `issues[].message` に、失敗したGit操作、起動エラー、Git自体の終了コード、伏字にした標準エラーを含めます。Gitが起動しなかった場合、Gitの終了コードは「未取得（起動失敗）」です。Gitの終了コードが1でも、workscopeの判定不能は2です。1を返すのは `check` が範囲外の変更を検出した場合だけです。
+
+標準エラーは `permission denied`、`detected dubious ownership`、`not a git repository` などの既知の診断語句だけを残します。パス、URL、認証情報、任意の設定値を含み得る部分や未知の内容は伏字にします。作業場所を指定する引数や、利用者由来の参照名も表示しません。Git未導入、起動時の権限制限、起動後の失敗を区別する情報であり、サンドボックスが原因と断定するものではありません。
+
+終了コードを調べる場合は、ビルドまたは導入した `workscope.exe` を直接実行し、直後の `$LASTEXITCODE` を確認してください。`go run` など別の起動用コマンドを経由した場合、そのコマンド自体の終了コードと区別する必要があります。
+
 ## 開始後の変更を照合する
 
 ```powershell

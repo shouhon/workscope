@@ -2,6 +2,7 @@ package baseline
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,6 +33,9 @@ func git(dir string, input []byte, args ...string) ([]byte, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	if err != nil {
+		return out, &gitError{cause: err, operation: gitOperation(args), stderr: safeGitStderr(stderr.String())}
+	}
 	return out, err
 }
 
@@ -41,7 +45,7 @@ func gitLine(dir string, args ...string) (string, error) {
 		return "", err
 	}
 	if !utf8.Valid(out) || !bytes.HasSuffix(out, []byte{'\n'}) {
-		return "", fmt.Errorf("Git出力の形式が不正です")
+		return "", fmt.Errorf("Git出力の形式が不正です。失敗したGit操作: %s", gitOperation(args))
 	}
 	return strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r"), nil
 }
@@ -49,7 +53,7 @@ func gitLine(dir string, args ...string) (string, error) {
 func openRepository(dir string) (*repository, error) {
 	root, err := gitLine(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return nil, fail("git_unavailable", "Gitの作業ディレクトリを特定できません。Gitの導入と実行場所を確認してください。", "")
+		return nil, failGit("git_unavailable", "Gitの作業ディレクトリを特定できません。", err)
 	}
 	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
@@ -68,7 +72,7 @@ func openRepository(dir string) (*repository, error) {
 		name, err := gitLine(root, "rev-parse", "--path-format=absolute", arg)
 		if err != nil {
 			fs.Close()
-			return nil, fail("git_unavailable", "Gitの管理領域を特定できません。", "")
+			return nil, failGit("git_unavailable", "Gitの管理領域を特定できません。", err)
 		}
 		name, err = filepath.EvalSymlinks(name)
 		if err != nil {
@@ -89,13 +93,18 @@ func (r *repository) head() (string, error) {
 	}
 	// コミットがまだないブランチだけは空のHEADとして扱う。
 	ref, symErr := gitLine(r.root, "symbolic-ref", "-q", "HEAD")
-	if symErr == nil {
-		_, refErr := git(r.root, nil, "show-ref", "--verify", "--quiet", ref)
-		if e, ok := refErr.(*exec.ExitError); ok && e.ExitCode() == 1 {
-			return "", nil
-		}
+	if symErr != nil {
+		return "", failGit("head_unreadable", "HEADを読み取れません。", errors.Join(err, symErr))
 	}
-	return "", fail("head_unreadable", "HEADを読み取れません。", "")
+	_, refErr := git(r.root, nil, "show-ref", "--verify", "--quiet", ref)
+	var e *exec.ExitError
+	if errors.As(refErr, &e) && e.ExitCode() == 1 {
+		return "", nil
+	}
+	if refErr != nil {
+		return "", failGit("head_unreadable", "HEADを読み取れません。", errors.Join(err, refErr))
+	}
+	return "", failGit("head_unreadable", "HEADを読み取れません。", err)
 }
 
 func splitNUL(data []byte) ([]string, error) {
@@ -111,7 +120,7 @@ func splitNUL(data []byte) ([]string, error) {
 func (r *repository) index() ([]IndexEntry, error) {
 	data, err := git(r.root, nil, "ls-files", "--stage", "-z")
 	if err != nil {
-		return nil, fail("index_unreadable", "インデックスを読み取れません。", "")
+		return nil, failGit("index_unreadable", "インデックスを読み取れません。", err)
 	}
 	return parseIndex(data)
 }
@@ -162,11 +171,12 @@ func (r *repository) ignored(names []string) (map[string]bool, error) {
 		return ignored, nil
 	}
 	data, err := git(r.root, []byte(strings.Join(names, "\x00")+"\x00"), "check-ignore", "--no-index", "-z", "--stdin")
-	if e, ok := err.(*exec.ExitError); ok && e.ExitCode() == 1 {
+	var e *exec.ExitError
+	if errors.As(err, &e) && e.ExitCode() == 1 {
 		err = nil
 	}
 	if err != nil {
-		return nil, fail("ignore_unreadable", "Gitの無視設定を確認できません。", "")
+		return nil, failGit("ignore_unreadable", "Gitの無視設定を確認できません。", err)
 	}
 	rows, err := splitNUL(data)
 	if err != nil {

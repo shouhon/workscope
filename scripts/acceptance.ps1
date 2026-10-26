@@ -29,6 +29,9 @@ function Invoke-Captured([string] $File, [string] $Directory, [string[]] $Argume
     }
     $start.Environment['GIT_OPTIONAL_LOCKS'] = '0'
     $start.Environment['GIT_TERMINAL_PROMPT'] = '0'
+    # 診断語句の確認を、利用者のGitの表示言語に依存させない。
+    $start.Environment['LC_ALL'] = 'C'
+    $start.Environment['LANGUAGE'] = 'C'
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $start
     try {
@@ -97,6 +100,19 @@ $temporary = [System.IO.Directory]::CreateTempSubdirectory('workscope-acceptance
 try {
     $emptyHooks = Join-Path $temporary '空のフック'
     $null = [System.IO.Directory]::CreateDirectory($emptyHooks)
+    # 起動用コマンドを介さず、実行ファイル自身のGit失敗時の終了コードを確認する。
+    $outsideGit = Join-Path $temporary 'Git外'
+    $null = [System.IO.Directory]::CreateDirectory($outsideGit)
+    foreach ($arguments in @(@('begin', '--allow', 'new.txt'), @('check'))) {
+        $unknown = Invoke-JSON $outsideGit $arguments 2 'unknown'
+        $message = $unknown.Data.issues[0].message
+        Assert-Acceptance ($unknown.Data.issues[0].code -ceq 'git_unavailable' -and
+            $message.Contains('失敗したGit操作: git rev-parse --show-toplevel') -and
+            $message.Contains('起動エラー: なし') -and
+            $message.Contains('Gitの終了コード: 128') -and
+            $message.Contains('not a git repository')) 'Gitを参照できない理由が診断にありません。'
+    }
+    Assert-Acceptance (-not (Test-Path -LiteralPath (Join-Path $outsideGit '.workscope'))) 'Git外で状態保存先を作成しました。'
     foreach ($mode in @('通常', 'worktree')) {
         $primary = Join-Path $temporary "$mode/主 作業"
         $null = [System.IO.Directory]::CreateDirectory($primary)
