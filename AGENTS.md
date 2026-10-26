@@ -25,7 +25,7 @@
 
 - ソースコードはGitHub、Windows用の実行ファイルは同じリポジトリのGitHub Releasesで配布する。ライセンスはルートの `LICENSE` にあるMITとする。
 - 導入はScoopの定義URL、またはZIPの手動展開とする。`scripts/package.ps1` が必須検証後にZIP、Scoop定義、SHA-256一覧を `dist/` へ作成する。詳細と公開後の確認は [docs/distribution.md](docs/distribution.md) を正本とする。
-- 配布物の手元での作成と、タグ・Releaseの公開を分ける。公開には引き続き対象と操作を特定した明示依頼が必要であり、公開済みの同じ版へ別内容を差し替えない。
+- 配布物の手元での作成と、タグ・Releaseの公開を分ける。`main` へのpushで `version.Current` が上がった場合は、`.github/workflows/ci-release.yml` が必須検証後に対象コミットのタグとReleaseを自動公開する。この条件以外の公開には対象と操作を特定した明示依頼が必要であり、公開済みの同じ版へ別内容を差し替えない。
 
 ## 版番号の管理
 

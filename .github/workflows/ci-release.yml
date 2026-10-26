@@ -1,0 +1,91 @@
+name: 検証とRelease
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  verify:
+    name: 検証と配布物の作成
+    runs-on: windows-latest
+    timeout-minutes: 20
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Goを用意
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: push前後の版番号を比較
+        id: version
+        if: github.event_name == 'push' && github.repository == 'shouhon/workscope'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          $plan = ./scripts/release-plan.ps1 -Before $env:BEFORE -After $env:AFTER
+          "changed=$($plan.Changed.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "version=$($plan.Version)" >> $env:GITHUB_OUTPUT
+      - name: 版番号に変更がない場合の検証
+        if: steps.version.outputs.changed != 'true'
+        run: ./scripts/verify.ps1
+      - name: 版番号が変わった場合の検証と梱包
+        if: steps.version.outputs.changed == 'true'
+        run: ./scripts/package.ps1
+      - name: 検証した配布物を保存
+        if: steps.version.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            dist/workscope_${{ steps.version.outputs.version }}_windows_amd64.zip
+            dist/workscope.json
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: GitHub Releaseを公開
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'shouhon/workscope' && needs.verify.outputs.changed == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: workscope-release
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: 公開処理を取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: 検証済みの配布物を取得
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-${{ github.sha }}
+          path: dist
+      - name: 新しい版を公開
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: ./scripts/publish-release.ps1 -Version $env:RELEASE_VERSION -Commit $env:RELEASE_COMMIT -Repository $env:RELEASE_REPOSITORY

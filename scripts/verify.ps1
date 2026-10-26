@@ -52,6 +52,9 @@ try {
     Write-Output '一時リポジトリで実行ファイルの受入確認を行っています。'
     & (Join-Path $PSScriptRoot 'acceptance.ps1')
 
+    Write-Output 'Releaseの判定と公開時の保護を確認しています。'
+    & (Join-Path $PSScriptRoot 'test-release.ps1')
+
     Write-Output "検証に成功しました。$($versionText[0])"
 }
 finally {
