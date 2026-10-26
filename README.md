@@ -11,6 +11,7 @@ AIに修正を任せるときなどに、開始前からある未コミット変
 - ファイル・ディレクトリ・これから作るパスを、作業で変更してよい範囲として指定。
 - 開始前の変更を保持したまま、開始後の追加・再編集・削除・種類変更を検出。
 - ステージした内容の変化も、作業ファイルとは別に照合。
+- タスク名ごとに開始記録を保持し、名前を指定して照合。
 - 日本語表示とJSON出力、終了コードによる自動処理に対応。
 - 通常のGitリポジトリと追加の作業ツリー（worktree）で利用可能。
 
@@ -74,6 +75,17 @@ JSONで結果を受け取る場合や、開始記録を明示的に取り直す�
 workscope check --json
 workscope begin --replace --allow src --allow AGENTS.md
 ```
+
+複数の作業の開始記録を残す場合は、`begin` と `check` に同じタスク名を指定します。別の名前で開始しても、他の記録は保持します。
+
+```powershell
+workscope begin --task '機能追加' --allow src
+workscope begin --task '文書修正' --allow docs
+workscope check --task '機能追加'
+workscope check --task '文書修正'
+```
+
+`--task` を省略すると従来の `baseline.json` を扱います。`--replace --task '機能追加'` はそのタスクの記録だけを取り直します。詳しい保存先と名前の規則は[利用ガイド](docs/usage.md#タスク名ごとに開始記録を保持する)を参照してください。
 
 | 終了コード | 意味 |
 | --- | --- |

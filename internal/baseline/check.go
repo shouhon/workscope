@@ -8,9 +8,16 @@ import (
 )
 
 // Check は開始記録と現在の状態を照合する。対象と開始記録には書き込まない。
-func Check(dir string) (Result, int) {
+func Check(dir, task string) (Result, int) {
 	result := NewResult()
 	result.Command = "check"
+	result.Task = task
+	if !validTask(task) {
+		result.Status = "invalid_arguments"
+		result.Coverage.Complete = false
+		result.Issues = append(result.Issues, Issue{Code: "invalid_task", Message: invalidTaskMessage})
+		return result, 64
+	}
 	err := func() error {
 		r, err := openRepository(dir)
 		if err != nil {
@@ -18,16 +25,16 @@ func Check(dir string) (Result, int) {
 		}
 		defer r.fs.Close()
 		result.Root = r.root
-		data, err := r.existing()
+		data, err := r.existing(task)
 		if err != nil {
 			return err
 		}
 		if data == nil {
-			return fail("baseline_missing", "開始記録がありません。先に begin --allow <対象> を実行してください。", stateName+"/"+recordName)
+			return fail("baseline_missing", "指定した開始記録がありません。同じタスク名を指定して begin --allow <対象> を実行してください。", stateName+"/"+RecordName(task))
 		}
 		var record Record
 		if err := json.Unmarshal(data, &record); err != nil {
-			return fail("baseline_unreadable", "開始記録を解析できません。", stateName+"/"+recordName)
+			return fail("baseline_unreadable", "開始記録を解析できません。", stateName+"/"+RecordName(task))
 		}
 		result.BaselineID = record.ID
 		result.PreexistingChanges = record.PreexistingChanges
@@ -43,9 +50,9 @@ func Check(dir string) (Result, int) {
 			result.Issues = append(result.Issues, Issue{Code: "head_changed", Message: "開始時からHEADが変わったため、完全な照合はできません。"})
 		}
 		result.compare(record, current)
-		confirmed, err := r.existing()
+		confirmed, err := r.existing(task)
 		if err != nil || !bytes.Equal(data, confirmed) {
-			return fail("baseline_changed", "照合中に開始記録が変化したか、読み取れなくなりました。再実行してください。", stateName+"/"+recordName)
+			return fail("baseline_changed", "照合中に開始記録が変化したか、読み取れなくなりました。再実行してください。", stateName+"/"+RecordName(task))
 		}
 		return nil
 	}()

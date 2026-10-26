@@ -20,6 +20,16 @@
 | 6. 外部リンク先を走査せずリンク自体を比較 | `TestBeginDoesNotFollowLinks`、`TestCheckLinkTargetChangesWithoutFollowingContents`、`TestCheckReportsNewParentLinkAlongsideUnreadableDescendant`。実際のシンボリックリンクを使い、リンク先内容の変更が差分に現れず、参照先文字列の変更が現れることを確認する。`TestWindowsJunctionIsNeverTraversed` はジャンクションを対象外として停止することを確認する |
 | 7. 対象・Git状態・開始記録を許可なく変更しない | `TestBeginRecordsContentIndexAndGitStateWithoutChangingInputs`、`TestBeginProtectsExistingRecordAndReplacesExplicitly`、`TestWindowsFailedReplacementPreservesBaseline`。受入スクリプトで通常・worktree両方の `begin`、`check`、ヘルプ、版表示、引数エラー、既存記録の拒否、明示した取り直し、破損記録の拒否について対象とGit状態を比較し、許可しない記録更新も検出する |
 | 8. 配列の安定順・JSON・終了コード | `TestCheckSeparatesPreexistingChangesAndReediting`、`TestCheckChangeKindsAndDirectoryBoundaries`、`internal/cli/run_test.go` のJSON・日本語・出力失敗テスト。受入スクリプトで同一状態の出力全体の一致、固定項目と配列、標準出力のJSONオブジェクト1件、標準エラー、終了コード0・1・2・64を確認する |
+| 追加要件9. タスク名ごとの開始記録 | `TestTaskRecordsCoexistAndSelectIndependentBaselines`、`TestTaskRecordsCanPrecedeDefaultRecord`、`TestTaskNamesRejectUnsafeAndAmbiguousArguments`、`TestTaskRecordsProtectMismatchedAndUnreadableState`、保存時の競合テスト、`TestWindowsFailedReplacementPreservesBaseline`、CLIのタスク引数・表示テスト。受入スクリプトで従来の記録と複数タスクの併存、開始時点・許容範囲、未記録名と上書きの拒否、選択した記録だけの取り直しを通常・worktreeの両方で確認する |
+
+## タスク別記録の確認結果（2026-10-26）
+
+- 基点は `3c47a99`。タスク別記録の製品コード、テスト、受入スクリプトと文書を加えたソースを検証した。CLI版は機能追加により `0.3.1` から `0.4.0` へ更新し、保存・JSON形式は `schema_version: 1` を維持した。
+- `checkstamp run --label task-records --input go.mod --input cmd --input internal --input scripts --input .github --json -- pwsh -NoProfile -File ./scripts/verify.ps1` が成功した。実行IDは `efb3a005b5436b4a1bdea6aa804805cc`。同じ作業ディレクトリで `checkstamp status` が `valid`、子プロセスの終了コードが0であることを確認した。記録は除外済みの `.checkstamp/` に置き、コミットしない。
+- 整形、静的検査、全Goテスト、Windowsビルド、ヘルプ・版表示、通常・worktreeの実行ファイルでの受入確認、既存のRelease判定テストが成功した。実行ファイルの版表示は `workscope 0.4.0` で正本と一致した。SHA-256は `8A5A5AB65741683338CB27E77E0E58939028D067390A145EDFC2E2F43DEF8908`。
+- 異なる開始時点と許容範囲を持つ `日本語 作業A` と `日本語 作業a` を作り、従来の記録と併存させた。それぞれの記録ID・変更件数・範囲判定、未記録名の拒否と、選択した記録だけの取り直しを実行ファイルで確認した。対象ファイル、Git状態、選択しなかった記録の保持も確認した。
+- 自動テストでタスク記録の初回作成と後からの従来記録の追加、名前とファイル名の不一致、破損・リンクの拒否、後から作られた同名記録・空ディレクトリとの競合、Windowsの置換失敗時の記録保持を確認した。状態記録のリンク拒否テストは `go test -mod=readonly -count=1 -v ./internal/baseline -run '^TestTaskRecordsProtectMismatchedAndUnreadableState/symlink$'` でも実行し、スキップなしの成功を確認した。
+- 読み取り専用の補助担当が記録保護・旧形式の読み取り・引数処理を独立点検し、後から作られた空ディレクトリの所有確認不足を指摘した。主担当が修正と再現テストを加え、最終ソースを必須検証で確認した。修正後の実行検証と最終判断は主担当による。
 
 ## 確認対象と結果（2026-10-22）
 

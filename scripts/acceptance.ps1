@@ -85,7 +85,11 @@ function Get-ProtectedState([string] $Directory, [bool] $IncludeBaseline = $true
     $config = Join-Path $commonDirectory 'config'
     Assert-Acceptance ((Test-Path -LiteralPath $index -PathType Leaf) -and (Test-Path -LiteralPath $config -PathType Leaf)) '比較対象のインデックスまたは共通Git設定が見つかりません。'
     $paths += @($index, $config, (Join-Path $gitDirectory 'HEAD'), (Join-Path $gitDirectory 'config.worktree'))
-    if ($IncludeBaseline) { $paths += Join-Path $Directory '.workscope/baseline.json' }
+    if ($IncludeBaseline) {
+        $paths += Join-Path $Directory '.workscope/baseline.json'
+        $paths += @(Get-ChildItem -LiteralPath (Join-Path $Directory '.workscope') -Filter 'task-*.json' -File |
+            Sort-Object Name | Select-Object -ExpandProperty FullName)
+    }
     $hashes = [ordered]@{}
     foreach ($path in $paths) {
         $hashes[$path] = if (Test-Path -LiteralPath $path -PathType Leaf) {
@@ -191,12 +195,52 @@ try {
         $replacement = Invoke-JSON $subdirectory @('begin', '--replace', '--allow', 'Src') 0 'recorded'
         Assert-Acceptance ($replacement.Data.baseline_id -cne $recorded.Data.baseline_id) "$mode の明示的な取り直しが反映されません。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode の明示的な取り直しが対象・Git状態を変更しました。"
+
+        # 異なる開始時点と許容範囲を持つタスクを、従来の記録と併存させる。
+        $defaultPath = Join-Path $directory '.workscope/baseline.json'
+        $defaultHash = (Get-FileHash -LiteralPath $defaultPath -Algorithm SHA256).Hash
+        $before = Get-ProtectedState $directory $false
+        $taskA = Invoke-JSON $subdirectory @('begin', '--task', '日本語 作業A', '--allow', 'Src') 0 'recorded'
+        Assert-Acceptance ($taskA.Data.task -ceq '日本語 作業A' -and $taskA.Data.baseline_id -cne $replacement.Data.baseline_id) "$mode のタスクの記録が不正です。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode のタスク記録が対象・Git状態を変更しました。"
+        Write-Fixture $directory 'config.toml' 'タスクA開始後の変更'
+        $before = Get-ProtectedState $directory $false
+        $taskB = Invoke-JSON $subdirectory @('begin', '--task=日本語 作業a', '--allow', 'config.toml') 0 'recorded'
+        Assert-Acceptance ($taskB.Data.task -ceq '日本語 作業a' -and $taskB.Data.baseline_id -cne $taskA.Data.baseline_id) "$mode の大小文字が異なるタスクを区別できません。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode の別タスクの追加が対象・Git状態を変更しました。"
+        Assert-Acceptance ($defaultHash -ceq (Get-FileHash -LiteralPath $defaultPath -Algorithm SHA256).Hash) "$mode のタスク追加が従来の記録を変更しました。"
+
+        $before = Get-ProtectedState $directory
+        $checkedA = Invoke-JSON $subdirectory @('check', '--task=日本語 作業A') 1 'out_of_scope'
+        $checkedB = Invoke-JSON $subdirectory @('check', '--task', '日本語 作業a') 0 'within_scope'
+        Assert-Acceptance ($checkedA.Data.baseline_id -ceq $taskA.Data.baseline_id -and $checkedA.Data.changes_since_begin.Count -eq 1 -and $checkedA.Data.out_of_scope_changes[0].path -ceq 'config.toml') "$mode のタスクAの開始時点・許容範囲が不正です。"
+        Assert-Acceptance ($checkedB.Data.baseline_id -ceq $taskB.Data.baseline_id -and $checkedB.Data.changes_since_begin.Count -eq 0) "$mode のタスクBの開始時点が不正です。"
+        $missing = Invoke-JSON $subdirectory @('check', '--task', '未記録') 2 'unknown'
+        Assert-Acceptance ($missing.Data.baseline_id -ceq '' -and $missing.Data.issues[0].code -ceq 'baseline_missing') "$mode の未記録名で別の開始記録を使いました。"
+        $null = Invoke-JSON $subdirectory @('begin', '--task', '日本語 作業A', '--allow', 'Src') 2 'unknown'
+        $null = Invoke-JSON $subdirectory @('check', '--task=') 64 'invalid_arguments'
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の照合・拒否したタスク操作が既存状態を変更しました。"
+
+        # 選んだタスクだけを取り直し、他の開始時点が維持されることを確かめる。
+        $before = Get-ProtectedState $directory $false
+        $taskReplacement = Invoke-JSON $subdirectory @('begin', '--replace', '--task', '日本語 作業a', '--allow', 'config.toml') 0 'recorded'
+        Assert-Acceptance ($taskReplacement.Data.baseline_id -cne $taskB.Data.baseline_id -and $taskReplacement.Data.task -ceq '日本語 作業a') "$mode の選んだタスクを取り直せません。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false) -and $defaultHash -ceq (Get-FileHash -LiteralPath $defaultPath -Algorithm SHA256).Hash) "$mode のタスクの取り直しが対象・Git状態・従来の記録を変更しました。"
+        $before = Get-ProtectedState $directory
+        $againA = Invoke-JSON $subdirectory @('check', '--task', '日本語 作業A') 1 'out_of_scope'
+        Assert-Acceptance ($againA.Text -ceq $checkedA.Text) "$mode の別タスクの取り直しでタスクAの記録が変化しました。"
+        $againB = Invoke-JSON $subdirectory @('check', '--task', '日本語 作業a') 0 'within_scope'
+        Assert-Acceptance ($againB.Data.baseline_id -ceq $taskReplacement.Data.baseline_id) "$mode の取り直したタスクを選べません。"
+        $defaultCheck = Invoke-JSON $subdirectory @('check') 1 'out_of_scope'
+        Assert-Acceptance ($defaultCheck.Data.baseline_id -ceq $replacement.Data.baseline_id -and -not $defaultCheck.Data.ContainsKey('task')) "$mode のタスク省略時に従来の記録を使いませんでした。"
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode のタスク照合が既存状態を変更しました。"
+
         Write-Fixture $directory '.workscope/baseline.json' '{'
         $before = Get-ProtectedState $directory
         $null = Invoke-JSON $subdirectory @('check') 2 'unknown'
         $null = Invoke-JSON $subdirectory @('begin', '--replace', '--allow', 'Src') 2 'unknown'
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の破損した開始記録を変更しました。"
-        Write-Output "受入確認に成功しました: $mode （終了コード0・1・2・64、JSON、日本語表示、非破壊性）"
+        Write-Output "受入確認に成功しました: $mode （終了コード0・1・2・64、JSON、日本語表示、タスク別記録、非破壊性）"
     }
 }
 finally {

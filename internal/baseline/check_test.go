@@ -12,7 +12,7 @@ import (
 
 func beginForCheck(t *testing.T, dir string, allow ...string) Record {
 	t.Helper()
-	result, code := Begin(dir, allow, false)
+	result, code := Begin(dir, allow, false, "")
 	if code != 0 {
 		t.Fatalf("開始記録失敗: %d %+v", code, result)
 	}
@@ -27,14 +27,14 @@ func TestCheckSeparatesPreexistingChangesAndReediting(t *testing.T) {
 	write(t, dir, "tracked.txt", "開始前の追加編集")
 	record := beginForCheck(t, dir, "future")
 	_, baselineBefore := readRecord(t, dir)
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	if code != 0 || result.Status != "within_scope" || !reflect.DeepEqual(result.PreexistingChanges, record.PreexistingChanges) || len(result.ChangesSinceBegin) != 0 || len(result.IndexChanges) != 0 {
 		t.Fatalf("開始前の変更を区別できません: %d %+v", code, result)
 	}
 	write(t, dir, "tracked.txt", "開始後の再編集")
 	indexBefore, _ := os.ReadFile(filepath.Join(dir, ".git", "index"))
 	configBefore, _ := os.ReadFile(filepath.Join(dir, ".git", "config"))
-	result, code = Check(dir)
+	result, code = Check(dir, "")
 	if code != 1 || result.Status != "out_of_scope" || len(result.ChangesSinceBegin) != 1 || len(result.IndexChanges) != 0 || len(result.OutOfScopeChanges) != 1 {
 		t.Fatalf("再編集を検出できません: %d %+v", code, result)
 	}
@@ -42,7 +42,7 @@ func TestCheckSeparatesPreexistingChangesAndReediting(t *testing.T) {
 	if change.Path != "tracked.txt" || change.Kind != "modified" || change.WithinScope || change.BeforeSHA256 != record.Files[0].SHA256 || change.BeforeSHA256 == change.AfterSHA256 || len(change.AfterSHA256) != 64 {
 		t.Fatalf("内容差分が不正: %+v", change)
 	}
-	again, againCode := Check(dir)
+	again, againCode := Check(dir, "")
 	firstJSON, _ := json.Marshal(result)
 	secondJSON, _ := json.Marshal(again)
 	if againCode != code || !bytes.Equal(firstJSON, secondJSON) {
@@ -76,7 +76,7 @@ func TestCheckChangeKindsAndDirectoryBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, dir, "src/type/child", "種類変更後の配下")
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	if code != 1 || len(result.OutOfScopeChanges) != 1 || len(result.Issues) != 0 {
 		t.Fatalf("範囲判定失敗: %d %+v", code, result)
 	}
@@ -99,7 +99,7 @@ func TestCheckFileAllowDoesNotExpandAfterTypeChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, dir, "tracked.txt/child", "配下は許容していない")
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	if code != 1 || len(result.ChangesSinceBegin) != 2 || !result.ChangesSinceBegin[0].WithinScope || result.ChangesSinceBegin[1].WithinScope {
 		t.Fatalf("ファイルの許容範囲が広がりました: %d %+v", code, result)
 	}
@@ -112,7 +112,7 @@ func TestCheckReportsIndexOnlyChanges(t *testing.T) {
 	write(t, dir, "tracked.txt", "ステージだけに残す本文")
 	testGit(t, dir, "add", "tracked.txt")
 	write(t, dir, "tracked.txt", string(original))
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	if code != 1 || len(result.ChangesSinceBegin) != 0 || len(result.IndexChanges) != 1 || len(result.OutOfScopeChanges) != 1 {
 		t.Fatalf("インデックスだけの変化を検出できません: %d %+v", code, result)
 	}
@@ -126,7 +126,7 @@ func TestCheckIndexDeletionAdditionAndConflictStages(t *testing.T) {
 	dir := repo(t)
 	record := beginForCheck(t, dir, ".")
 	testGit(t, dir, "rm", "--cached", "tracked.txt")
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	if code != 0 || len(result.ChangesSinceBegin) != 0 || len(result.IndexChanges) != 1 || result.IndexChanges[0].Kind != "deleted" || len(result.IndexChanges[0].After) != 0 {
 		t.Fatalf("追跡解除を誤判定: %d %+v", code, result)
 	}
@@ -135,7 +135,7 @@ func TestCheckIndexDeletionAdditionAndConflictStages(t *testing.T) {
 	if _, err := git(dir, []byte("100644 "+record.Index[0].Object+" 1\ttracked.txt\n100644 "+record.Index[0].Object+" 2\ttracked.txt\n"), "update-index", "--index-info"); err != nil {
 		t.Fatal(err)
 	}
-	result, code = Check(dir)
+	result, code = Check(dir, "")
 	if code != 0 || len(result.IndexChanges) != 2 || result.IndexChanges[0].Kind != "added" || len(result.IndexChanges[1].After) != 2 || result.IndexChanges[1].After[1].Stage != 2 {
 		t.Fatalf("追加・競合段階を検出できません: %d %+v", code, result)
 	}
@@ -155,7 +155,7 @@ func TestCheckUnknownAndOutOfScopeCoexist(t *testing.T) {
 				write(t, dir, "module/hidden.txt", "対象外")
 			}
 			write(t, dir, "tracked.txt", "範囲外の編集")
-			result, code := Check(dir)
+			result, code := Check(dir, "")
 			requireFailure(t, result, code, wantIssue)
 			if code != 2 || result.Coverage.Complete || len(result.ChangesSinceBegin) != 1 || len(result.OutOfScopeChanges) == 0 || result.ChangesSinceBegin[0].Path != "tracked.txt" {
 				t.Fatalf("判定不能と範囲外を保持できません: %d %+v", code, result)
@@ -169,7 +169,7 @@ func TestCheckUnknownAndOutOfScopeCoexist(t *testing.T) {
 
 func TestCheckRejectsMissingAndInvalidBaseline(t *testing.T) {
 	dir := repo(t)
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	requireFailure(t, result, code, "baseline_missing")
 	if _, err := os.Stat(filepath.Join(dir, stateName)); !os.IsNotExist(err) {
 		t.Fatal("照合が開始記録を作成しました")
@@ -204,7 +204,7 @@ func TestCheckRejectsMissingAndInvalidBaseline(t *testing.T) {
 				data = []byte("{")
 			}
 			write(t, dir, stateName+"/"+recordName, string(data))
-			result, code := Check(dir)
+			result, code := Check(dir, "")
 			requireFailure(t, result, code, "foreign_state")
 			after, err := os.ReadFile(filepath.Join(dir, stateName, recordName))
 			if err != nil || !bytes.Equal(data, after) {
@@ -221,7 +221,7 @@ func TestCheckFromWorktreeSubdirectory(t *testing.T) {
 	write(t, worktree, "sub/日本語.txt", "開始時")
 	beginForCheck(t, worktree, "sub")
 	write(t, worktree, "sub/日本語.txt", "更新")
-	result, code := Check(filepath.Join(worktree, "sub"))
+	result, code := Check(filepath.Join(worktree, "sub"), "")
 	if code != 0 || len(result.ChangesSinceBegin) != 1 || result.ChangesSinceBegin[0].Path != "sub/日本語.txt" || !result.ChangesSinceBegin[0].WithinScope {
 		t.Fatalf("作業ツリーの照合失敗: %d %+v", code, result)
 	}
@@ -236,7 +236,7 @@ func TestCheckLinkTargetChangesWithoutFollowingContents(t *testing.T) {
 	}
 	beginForCheck(t, dir, "link")
 	write(t, out1, "秘密.txt", "リンク先の変化は対象外")
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	if code != 0 || len(result.ChangesSinceBegin) != 0 {
 		t.Fatalf("リンク先の内容を照合しました: %d %+v", code, result)
 	}
@@ -246,7 +246,7 @@ func TestCheckLinkTargetChangesWithoutFollowingContents(t *testing.T) {
 	if err := os.Symlink(out2, link); err != nil {
 		t.Fatal(err)
 	}
-	result, code = Check(dir)
+	result, code = Check(dir, "")
 	if code != 0 || len(result.ChangesSinceBegin) != 1 || result.ChangesSinceBegin[0].Kind != "modified" || result.ChangesSinceBegin[0].BeforeSHA256 == result.ChangesSinceBegin[0].AfterSHA256 {
 		t.Fatalf("リンク先の文字列変更を検出できません: %d %+v", code, result)
 	}
@@ -274,7 +274,7 @@ func TestCheckReportsNewParentLinkAlongsideUnreadableDescendant(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "dir")); err != nil {
 		t.Fatal(err)
 	}
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	requireFailure(t, result, code, "unsafe_parent")
 	if code != 2 || len(result.ChangesSinceBegin) != 1 || result.ChangesSinceBegin[0].Path != "dir" || result.ChangesSinceBegin[0].AfterKind != "symlink" || len(result.OutOfScopeChanges) != 1 {
 		t.Fatalf("取得できた親リンクの変化が失われました: %d %+v", code, result)
@@ -287,7 +287,7 @@ func TestCheckDoesNotTreatNewlyIgnoredBaselinePathAsDeleted(t *testing.T) {
 	beginForCheck(t, dir, ".gitignore")
 	write(t, dir, ".gitignore", "untracked.txt\n")
 	write(t, dir, "untracked.txt", "無視対象になった本文")
-	result, code := Check(dir)
+	result, code := Check(dir, "")
 	requireFailure(t, result, code, "coverage_changed")
 	if code != 2 || len(result.ChangesSinceBegin) != 1 || result.ChangesSinceBegin[0].Path != ".gitignore" {
 		t.Fatalf("無視対象への変化を削除や変更なしと扱いました: %d %+v", code, result)

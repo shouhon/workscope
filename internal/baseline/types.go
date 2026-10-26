@@ -52,6 +52,7 @@ type Record struct {
 	SchemaVersion      int          `json:"schema_version"`
 	Tool               string       `json:"tool"`
 	ID                 string       `json:"baseline_id"`
+	Task               string       `json:"task,omitempty"`
 	Root               string       `json:"root"`
 	CreatedAt          string       `json:"created_at"`
 	Head               string       `json:"head"`
@@ -88,6 +89,7 @@ type Result struct {
 	Command            string        `json:"command"`
 	Status             string        `json:"status"`
 	BaselineID         string        `json:"baseline_id"`
+	Task               string        `json:"task,omitempty"`
 	Root               string        `json:"root"`
 	Coverage           Coverage      `json:"coverage"`
 	PreexistingChanges []GitChange   `json:"preexisting_changes"`

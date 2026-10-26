@@ -87,7 +87,7 @@ func TestBeginRecordsContentIndexAndGitStateWithoutChangingInputs(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, code := Begin(dir, []string{"空白 日本語", "future/new.txt", "tracked.txt"}, false)
+	result, code := Begin(dir, []string{"空白 日本語", "future/new.txt", "tracked.txt"}, false, "")
 	if code != 0 || result.Status != "recorded" || !result.Coverage.Complete {
 		t.Fatalf("記録失敗: %d %+v", code, result)
 	}
@@ -133,19 +133,19 @@ func TestBeginRecordsContentIndexAndGitStateWithoutChangingInputs(t *testing.T) 
 
 func TestBeginProtectsExistingRecordAndReplacesExplicitly(t *testing.T) {
 	dir := repo(t)
-	first, code := Begin(dir, []string{"tracked.txt"}, false)
+	first, code := Begin(dir, []string{"tracked.txt"}, false, "")
 	if code != 0 {
 		t.Fatalf("%+v", first)
 	}
 	_, before := readRecord(t, dir)
 	write(t, dir, "tracked.txt", "更新した本文")
-	result, code := Begin(dir, []string{"tracked.txt"}, false)
+	result, code := Begin(dir, []string{"tracked.txt"}, false, "")
 	requireFailure(t, result, code, "baseline_exists")
 	_, after := readRecord(t, dir)
 	if !bytes.Equal(before, after) {
 		t.Fatal("許可なしで上書きされました")
 	}
-	result, code = Begin(dir, []string{"tracked.txt"}, true)
+	result, code = Begin(dir, []string{"tracked.txt"}, true, "")
 	if code != 0 || result.BaselineID == first.BaselineID {
 		t.Fatalf("取り直し失敗: %d %+v", code, result)
 	}
@@ -177,7 +177,7 @@ func TestBeginRejectsForeignStateEvenWithReplace(t *testing.T) {
 				if err := os.Remove(filepath.Join(dir, stateName)); err != nil {
 					t.Fatal(err)
 				}
-				result, code := Begin(dir, []string{"."}, false)
+				result, code := Begin(dir, []string{"."}, false, "")
 				if code != 0 {
 					t.Fatalf("%+v", result)
 				}
@@ -196,7 +196,7 @@ func TestBeginRejectsForeignStateEvenWithReplace(t *testing.T) {
 				data, _ := os.ReadFile(filepath.Join(dir, stateName, child.Name()))
 				before[child.Name()] = string(data)
 			}
-			result, code := Begin(dir, []string{"."}, true)
+			result, code := Begin(dir, []string{"."}, true, "")
 			requireFailure(t, result, code, "foreign_state")
 			for name, want := range before {
 				data, err := os.ReadFile(filepath.Join(dir, stateName, name))
@@ -224,7 +224,7 @@ func TestAllowNormalizationAndRejection(t *testing.T) {
 		t.Fatal("ディレクトリ境界が不正です")
 	}
 	for _, name := range []string{"", "../outside", ".git", ".git/config", ".workscope/baseline.json", "src/*", "src/?", "src/[a]", dir, "tracked.txt/child", "new/../../outside"} {
-		result, code := Begin(dir, []string{name}, false)
+		result, code := Begin(dir, []string{name}, false, "")
 		if code != 64 || result.Status != "invalid_arguments" {
 			t.Errorf("%q を拒否しませんでした: %d %+v", name, code, result)
 		}
@@ -239,7 +239,7 @@ func TestBeginUnbornAndTrackedDeletionAndKindChange(t *testing.T) {
 		dir := t.TempDir()
 		testGit(t, dir, "init", "-q")
 		write(t, dir, "new.txt", "本文")
-		result, code := Begin(dir, []string{"new.txt"}, false)
+		result, code := Begin(dir, []string{"new.txt"}, false, "")
 		if code != 0 {
 			t.Fatalf("%d %+v", code, result)
 		}
@@ -257,7 +257,7 @@ func TestBeginUnbornAndTrackedDeletionAndKindChange(t *testing.T) {
 			if kind == "directory" {
 				write(t, dir, "tracked.txt/child", "配下の本文")
 			}
-			result, code := Begin(dir, []string{"tracked.txt"}, false)
+			result, code := Begin(dir, []string{"tracked.txt"}, false, "")
 			if code != 0 {
 				t.Fatalf("%d %+v", code, result)
 			}
@@ -274,7 +274,7 @@ func TestBeginFromWorktreeSubdirectory(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "追加 作業ツリー")
 	testGit(t, dir, "worktree", "add", "-qb", "test-worktree", worktree)
 	write(t, worktree, "sub/new.txt", "作業ツリーの本文")
-	result, code := Begin(filepath.Join(worktree, "sub"), []string{"sub"}, false)
+	result, code := Begin(filepath.Join(worktree, "sub"), []string{"sub"}, false, "")
 	if code != 0 {
 		t.Fatalf("%d %+v", code, result)
 	}
@@ -295,7 +295,7 @@ func TestBeginDoesNotFollowLinks(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
 		t.Skipf("この環境ではリンクを作成できません: %v", err)
 	}
-	result, code := Begin(dir, []string{"link"}, false)
+	result, code := Begin(dir, []string{"link"}, false, "")
 	if code != 0 {
 		t.Fatalf("%d %+v", code, result)
 	}
@@ -306,7 +306,7 @@ func TestBeginDoesNotFollowLinks(t *testing.T) {
 	if bytes.Contains(data, []byte("リンク先の本文")) || bytes.Contains(data, []byte("secret.txt")) {
 		t.Fatal("リンク先を走査しました")
 	}
-	result, code = Begin(dir, []string{"link/secret.txt"}, true)
+	result, code = Begin(dir, []string{"link/secret.txt"}, true, "")
 	if code != 64 {
 		t.Fatalf("リンク配下を許容しました: %+v", result)
 	}
@@ -318,7 +318,7 @@ func TestBeginDoesNotFollowLinks(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(other, stateName)); err != nil {
 		t.Fatal(err)
 	}
-	result, code = Begin(other, []string{"."}, true)
+	result, code = Begin(other, []string{"."}, true, "")
 	requireFailure(t, result, code, "foreign_state")
 }
 
@@ -326,7 +326,7 @@ func TestBeginSubmoduleNeverReportsCompleteSuccess(t *testing.T) {
 	dir := repo(t)
 	hash := strings.TrimSpace(string(testGit(t, dir, "rev-parse", "HEAD")))
 	testGit(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+hash+",module")
-	result, code := Begin(dir, []string{"."}, false)
+	result, code := Begin(dir, []string{"."}, false, "")
 	requireFailure(t, result, code, "unsupported_submodule")
 	if result.Coverage.Complete || !reflect.DeepEqual(result.Coverage.Submodules, []string{"module"}) {
 		t.Fatalf("対象外の説明が不正: %+v", result.Coverage)
@@ -398,7 +398,7 @@ func TestBeginRejectsFileChangingDuringCapture(t *testing.T) {
 	case err := <-done:
 		t.Fatal(err)
 	}
-	result, code := Begin(dir, []string{"."}, false)
+	result, code := Begin(dir, []string{"."}, false, "")
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatal(err)

@@ -17,9 +17,9 @@ const help = `workscope - 作業開始後の変更が許容範囲内か照合す
 使い方:
   workscope --help / -h    この説明を表示する
   workscope --version      版番号を表示する
-  workscope begin --allow <対象> [--allow <対象> ...] [--json]
-  workscope begin --replace --allow <対象> [--allow <対象> ...] [--json]
-  workscope check [--json]
+  workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--json]
+  workscope begin --replace --allow <対象> [--allow <対象> ...] [--task <名前>] [--json]
+  workscope check [--json] [--task <名前>]
 
 記録する照合範囲:
   Gitルートを基準に、追跡中のファイルと無視されていない未追跡ファイルを扱う。
@@ -28,10 +28,14 @@ const help = `workscope - 作業開始後の変更が許容範囲内か照合す
   サブモジュールは判定対象外とし、存在するときは完全な照合と扱わない。
 
 開始記録の保存先: <Gitルート>/.workscope/baseline.json
+  --task を指定すると .workscope/task-<タスク名のSHA-256>.json に別々に保存する。
+  begin と check で同じタスク名を指定する。省略時は従来の開始記録だけを扱う。
+  日本語・空白を使える。大小文字は区別し、前後の空白・パス区切り・制御文字は拒否する。
 Gitの設定や .gitignore は自動変更しない。
 状態をGitから除外するには、利用者が .gitignore に /.workscope/ を追加する。
 
-既存記録は --replace なしで上書きしない。別用途の .workscope は使用しない。
+既存記録は --replace なしで上書きしない。取り直しは指定したタスクの記録だけに行う。
+別用途の .workscope は使用しない。
 リンクは参照先の文字列だけを記録し、リンク配下は --allow に指定できない。
 これから作るパスも指定できる。パスは現在地ではなくGitルートを基準にする。
 check は開始前の変更と開始後の内容・種類・インデックスの変化を分けて表示する。
@@ -66,23 +70,53 @@ func Run(args []string, stdout, stderr io.Writer) int {
 func runCheck(args []string, stdout, stderr io.Writer) int {
 	result := baseline.NewResult()
 	result.Command = "check"
-	jsonOutput, invalid := false, false
+	jsonOutput := false
 	for _, arg := range args {
 		if arg == "--json" {
 			jsonOutput = true
-		} else {
-			invalid = true
 		}
 	}
+	task, taskSet := "", false
+	var argumentError string
+	for i := 0; i < len(args); i++ {
+		switch arg := args[i]; {
+		case arg == "--json":
+		case arg == "--task", strings.HasPrefix(arg, "--task="):
+			if taskSet {
+				argumentError = "--task は1つだけ指定してください。"
+				break
+			}
+			taskSet = true
+			if arg == "--task" {
+				if i+1 == len(args) || strings.HasPrefix(args[i+1], "--") {
+					argumentError = "--task の名前がありません。"
+					break
+				}
+				i++
+				task = args[i]
+			} else {
+				task = strings.TrimPrefix(arg, "--task=")
+			}
+			if task == "" {
+				argumentError = "--task の名前がありません。"
+			}
+		default:
+			argumentError = "check の引数が正しくありません。workscope --help を確認してください。"
+		}
+		if argumentError != "" {
+			break
+		}
+	}
+	result.Task = task
 	code := 2
-	if invalid {
+	if argumentError != "" {
 		code = 64
 		result.Status = "invalid_arguments"
-		result.Issues = append(result.Issues, baseline.Issue{Code: "invalid_arguments", Message: "check の引数が正しくありません。workscope --help を確認してください。"})
+		result.Issues = append(result.Issues, baseline.Issue{Code: "invalid_arguments", Message: argumentError})
 	} else if dir, err := os.Getwd(); err != nil {
 		result.Issues = append(result.Issues, baseline.Issue{Code: "cwd_unavailable", Message: "現在の作業ディレクトリを確認できません。"})
 	} else {
-		result, code = baseline.Check(dir)
+		result, code = baseline.Check(dir, task)
 	}
 	if code == 2 || code == 64 {
 		result.Coverage.Complete = false
@@ -101,6 +135,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	var text strings.Builder
+	if result.Task != "" {
+		fmt.Fprintf(&text, "タスク: %q\n", result.Task)
+	}
 	switch result.Status {
 	case "within_scope":
 		text.WriteString("照合が完了しました。範囲外の変更はありません。\n")
@@ -153,12 +190,32 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 	}
 	allow := []string{}
 	replace := false
+	task, taskSet := "", false
 	var argumentError string
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; {
 		case arg == "--json":
 		case arg == "--replace":
 			replace = true
+		case arg == "--task", strings.HasPrefix(arg, "--task="):
+			if taskSet {
+				argumentError = "--task は1つだけ指定してください。"
+				break
+			}
+			taskSet = true
+			if arg == "--task" {
+				if i+1 == len(args) || strings.HasPrefix(args[i+1], "--") {
+					argumentError = "--task の名前がありません。"
+					break
+				}
+				i++
+				task = args[i]
+			} else {
+				task = strings.TrimPrefix(arg, "--task=")
+			}
+			if task == "" {
+				argumentError = "--task の名前がありません。"
+			}
 		case arg == "--allow":
 			if i+1 == len(args) || strings.HasPrefix(args[i+1], "--") {
 				argumentError = "--allow の対象がありません。"
@@ -176,6 +233,7 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	result := baseline.NewResult()
+	result.Task = task
 	code := 64
 	if argumentError != "" {
 		result.Status = "invalid_arguments"
@@ -188,7 +246,7 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 			result.Coverage.Complete = false
 			result.Issues = append(result.Issues, baseline.Issue{Code: "cwd_unavailable", Message: "現在の作業ディレクトリを確認できません。"})
 		} else {
-			result, code = baseline.Begin(dir, allow, replace)
+			result, code = baseline.Begin(dir, allow, replace, task)
 		}
 	}
 	if jsonOutput {
@@ -204,7 +262,12 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	}
-	return writeOutput(stdout, stderr, fmt.Sprintf("開始記録を保存しました。開始時の変更: %d件\n保存先: %s/.workscope/baseline.json\n照合対象: 追跡中・無視されていない未追跡ファイル、リンク自体、インデックス。\n対象外: 無視された未追跡ファイル、Git管理領域、状態保存先、サブモジュールの内容。\n", len(result.PreexistingChanges), result.Root))
+	var text strings.Builder
+	if result.Task != "" {
+		fmt.Fprintf(&text, "タスク: %q\n", result.Task)
+	}
+	fmt.Fprintf(&text, "開始記録を保存しました。開始時の変更: %d件\n保存先: %s/.workscope/%s\n照合対象: 追跡中・無視されていない未追跡ファイル、リンク自体、インデックス。\n対象外: 無視された未追跡ファイル、Git管理領域、状態保存先、サブモジュールの内容。\n", len(result.PreexistingChanges), result.Root, baseline.RecordName(task))
+	return writeOutput(stdout, stderr, text.String())
 }
 
 func writeOutput(stdout, stderr io.Writer, text string) int {

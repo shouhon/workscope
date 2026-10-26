@@ -23,7 +23,7 @@ func TestHelp(t *testing.T) {
 			if code := cli.Run([]string{arg}, &stdout, &stderr); code != 0 {
 				t.Fatalf("終了コード = %d、期待値 = 0", code)
 			}
-			for _, text := range []string{"使い方", "workscope check [--json]", "サブモジュール", "/.workscope/", "1=範囲外の変更あり"} {
+			for _, text := range []string{"使い方", "workscope check [--json]", "--task <名前>", "サブモジュール", "/.workscope/", "1=範囲外の変更あり"} {
 				if !strings.Contains(stdout.String(), text) {
 					t.Errorf("ヘルプに %q がありません", text)
 				}
@@ -207,6 +207,78 @@ func TestBeginOutsideGitReturnsUnknownJSON(t *testing.T) {
 	var result baseline.Result
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Status != "unknown" || stderr.Len() != 0 {
 		t.Fatalf("判定不能のJSONが不正: %s / %s / %v", &stdout, &stderr, err)
+	}
+}
+
+func TestTaskArgumentsJSONAndText(t *testing.T) {
+	dir := t.TempDir()
+	if output, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, output)
+	}
+	t.Chdir(dir)
+	const task = "日本語 作業"
+	var id string
+	for _, args := range [][]string{
+		{"begin", "--task", task, "--allow=future", "--json"},
+		{"check", "--task=" + task, "--json"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := cli.Run(args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+			t.Fatalf("タスクの実行失敗: %d %s / %s", code, &stdout, &stderr)
+		}
+		var result baseline.Result
+		decoder := json.NewDecoder(&stdout)
+		if err := decoder.Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF || result.Task != task || result.BaselineID == "" {
+			t.Fatalf("タスクのJSON契約が不正: %+v %v", result, err)
+		}
+		if args[0] == "begin" {
+			id = result.BaselineID
+		} else if result.BaselineID != id {
+			t.Fatal("別のタスクを照合しました")
+		}
+	}
+	for _, args := range [][]string{
+		{"begin", "--task=表示用", "--allow", "future"},
+		{"check", "--task", "表示用"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := cli.Run(args, &stdout, &stderr); code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `タスク: "表示用"`) {
+			t.Fatalf("タスクの日本語表示が不正: %d %s / %s", code, &stdout, &stderr)
+		}
+		if args[0] == "begin" && !strings.Contains(stdout.String(), "/.workscope/"+baseline.RecordName("表示用")) {
+			t.Fatal("実際の記録先を表示しませんでした")
+		}
+	}
+}
+
+func TestInvalidTaskArgumentsNeverWriteState(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for _, command := range []string{"begin", "check"} {
+		for _, args := range [][]string{
+			{"--task"}, {"--task", "--json"}, {"--task="}, {"--task", ""},
+			{"--task", "A", "--task=B"}, {"--task=A", "--task", "B"},
+			{"--task", "../outside"}, {"--task", " 前後"},
+		} {
+			full := append([]string{command}, args...)
+			if command == "begin" {
+				full = append(full, "--allow", "future")
+			}
+			full = append(full, "--json")
+			var stdout, stderr bytes.Buffer
+			code := cli.Run(full, &stdout, &stderr)
+			var result baseline.Result
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != 64 || result.Command != command || result.Status != "invalid_arguments" || result.Coverage.Complete || len(result.Issues) != 1 || stderr.Len() != 0 {
+				t.Fatalf("タスクの引数エラーが不正: %v %d %s / %s / %v", full, code, &stdout, &stderr, err)
+			}
+		}
+	}
+	children, err := os.ReadDir(dir)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("不正なタスク名でファイルを作成しました: %v %v", children, err)
 	}
 }
 
