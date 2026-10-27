@@ -16,31 +16,48 @@ type repository struct {
 	root     string
 	fs       *os.Root
 	excluded []string
+	progress *progress
 }
 
 func git(dir string, input []byte, args ...string) ([]byte, error) {
+	return gitWithProgress(dir, input, nil, args...)
+}
+
+func (r *repository) git(input []byte, args ...string) ([]byte, error) {
+	return gitWithProgress(r.root, input, r.progress, args...)
+}
+
+func gitWithProgress(dir string, input []byte, progress *progress, args ...string) ([]byte, error) {
+	defer progress.git(args)()
 	base := []string{"--no-optional-locks", "-C", dir, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}
 	cmd := exec.Command("git", append(base, args...)...)
+	diagnostic := gitContext{executable: cmd.Path, directory: dir}
+	if cmd.Err != nil {
+		diagnostic.executable = ""
+	}
 	// 呼出元のGIT_DIRや代替インデックスで、別の作業領域を記録しない。
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
 		if !strings.HasPrefix(strings.ToUpper(key), "GIT_") {
 			cmd.Env = append(cmd.Env, value)
+		} else {
+			diagnostic.omit(key)
 		}
 	}
-	cmd.Env = append(cmd.Env, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
+	// Gitの診断語句を、呼出元の表示言語に依存せず分類する。
+	cmd.Env = append(cmd.Env, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANGUAGE=C")
 	cmd.Stdin = bytes.NewReader(input)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return out, &gitError{cause: err, operation: gitOperation(args), stderr: safeGitStderr(stderr.String())}
+		return out, &gitError{cause: err, operation: gitOperation(args), stderr: safeGitStderr(stderr.String()), category: classifyGitError(err, stderr.String()), context: diagnostic}
 	}
 	return out, err
 }
 
-func gitLine(dir string, args ...string) (string, error) {
-	out, err := git(dir, nil, args...)
+func gitLine(dir string, progress *progress, args ...string) (string, error) {
+	out, err := gitWithProgress(dir, nil, progress, args...)
 	if err != nil {
 		return "", err
 	}
@@ -50,8 +67,12 @@ func gitLine(dir string, args ...string) (string, error) {
 	return strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r"), nil
 }
 
-func openRepository(dir string) (*repository, error) {
-	root, err := gitLine(dir, "rev-parse", "--show-toplevel")
+func openRepository(dir string, observers ...*progress) (*repository, error) {
+	var progress *progress
+	if len(observers) != 0 {
+		progress = observers[0]
+	}
+	root, err := gitLine(dir, progress, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, failGit("git_unavailable", "Gitの作業ディレクトリを特定できません。", err)
 	}
@@ -67,9 +88,9 @@ func openRepository(dir string) (*repository, error) {
 	if err != nil {
 		return nil, fail("root_unreadable", "Gitルートを開けません。", "")
 	}
-	r := &repository{root: root, fs: fs, excluded: []string{".workscope"}}
+	r := &repository{root: root, fs: fs, excluded: []string{".workscope"}, progress: progress}
 	for _, arg := range []string{"--absolute-git-dir", "--git-common-dir"} {
-		name, err := gitLine(root, "rev-parse", "--path-format=absolute", arg)
+		name, err := gitLine(root, progress, "rev-parse", "--path-format=absolute", arg)
 		if err != nil {
 			fs.Close()
 			return nil, failGit("git_unavailable", "Gitの管理領域を特定できません。", err)
@@ -87,16 +108,16 @@ func openRepository(dir string) (*repository, error) {
 }
 
 func (r *repository) head() (string, error) {
-	head, err := gitLine(r.root, "rev-parse", "--verify", "HEAD")
+	head, err := gitLine(r.root, r.progress, "rev-parse", "--verify", "HEAD")
 	if err == nil {
 		return head, nil
 	}
 	// コミットがまだないブランチだけは空のHEADとして扱う。
-	ref, symErr := gitLine(r.root, "symbolic-ref", "-q", "HEAD")
+	ref, symErr := gitLine(r.root, r.progress, "symbolic-ref", "-q", "HEAD")
 	if symErr != nil {
 		return "", failGit("head_unreadable", "HEADを読み取れません。", errors.Join(err, symErr))
 	}
-	_, refErr := git(r.root, nil, "show-ref", "--verify", "--quiet", ref)
+	_, refErr := r.git(nil, "show-ref", "--verify", "--quiet", ref)
 	var e *exec.ExitError
 	if errors.As(refErr, &e) && e.ExitCode() == 1 {
 		return "", nil
@@ -118,7 +139,7 @@ func splitNUL(data []byte) ([]string, error) {
 }
 
 func (r *repository) index() ([]IndexEntry, error) {
-	data, err := git(r.root, nil, "ls-files", "--stage", "-z")
+	data, err := r.git(nil, "ls-files", "--stage", "-z")
 	if err != nil {
 		return nil, failGit("index_unreadable", "インデックスを読み取れません。", err)
 	}
@@ -170,7 +191,7 @@ func (r *repository) ignored(names []string) (map[string]bool, error) {
 	if len(names) == 0 {
 		return ignored, nil
 	}
-	data, err := git(r.root, []byte(strings.Join(names, "\x00")+"\x00"), "check-ignore", "--no-index", "-z", "--stdin")
+	data, err := r.git([]byte(strings.Join(names, "\x00")+"\x00"), "check-ignore", "--no-index", "-z", "--stdin")
 	var e *exec.ExitError
 	if errors.As(err, &e) && e.ExitCode() == 1 {
 		err = nil

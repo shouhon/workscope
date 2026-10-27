@@ -56,9 +56,18 @@ function Write-Fixture([string] $Directory, [string] $Name, [string] $Text) {
     [System.IO.File]::WriteAllText($path, $Text, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Test-Progress([string] $Text) {
+    if ($Text -eq '') { return $true }
+    $pattern = '^進捗: (Git待ち: git [A-Za-z0-9 =<>_./伏字-]+|処理の準備|Git作業場所の確認|許容範囲の確認|開始記録の確認|ファイル走査|許容範囲の再確認|開始記録の保存|開始後の変更の照合|開始記録の再確認|処理終了) \| 確認済みファイル: [0-9]+件 \| 取得: [0-2]/2回目 \| 経過: [0-9]+\.[0-9]秒$'
+    foreach ($line in $Text.TrimEnd("`r", "`n").Split("`n")) {
+        if ($line.TrimEnd("`r") -cnotmatch $pattern) { return $false }
+    }
+    return $true
+}
+
 function Invoke-JSON([string] $Directory, [string[]] $Arguments, [int] $Code, [string] $Status) {
     $response = Invoke-Captured $executable $Directory ($Arguments + @('--json'))
-    Assert-Acceptance ($response.Code -eq $Code -and $response.Error -eq '') "終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
+    Assert-Acceptance ($response.Code -eq $Code -and (Test-Progress $response.Error)) "終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
     # Parseは後続のJSONや診断文も拒否する。ConvertFrom-Jsonだけで件数を判断しない。
     $document = [System.Text.Json.JsonDocument]::Parse($response.Text)
     try {
@@ -153,6 +162,12 @@ try {
             $response = Invoke-Captured $executable $subdirectory @($argument)
             Assert-Acceptance ($response.Code -eq 0 -and $response.Error -eq '' -and $response.Text.Length -gt 0) "$argument の表示に失敗しました。"
         }
+        foreach ($command in @('begin', 'check')) {
+            foreach ($flag in @('--help', '-h')) {
+                $response = Invoke-Captured $executable $subdirectory @($command, $flag)
+                Assert-Acceptance ($response.Code -eq 0 -and $response.Error -eq '' -and $response.Text.Contains('使用例:')) "$command $flag の表示に失敗しました。"
+            }
+        }
         $null = Invoke-JSON $subdirectory @('begin', '--allow', 'Src') 2 'unknown'
         $null = Invoke-JSON $subdirectory @('begin', '--allow', '../範囲外') 64 'invalid_arguments'
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の表示・拒否したbeginが既存状態を変更しました。"
@@ -182,7 +197,7 @@ try {
             Assert-Acceptance ($change.within_scope -eq ($expected -ccontains $change.path) -and -not $change.path.Contains('\')) "許容範囲またはパス区切りが不正です: $($change.path)"
         }
         $response = Invoke-Captured $executable $subdirectory @('check')
-        Assert-Acceptance ($response.Code -eq 1 -and $response.Error -eq '' -and $response.Text.Contains('範囲外の変更: 4件') -and $response.Text.Contains('開始前からあった変更: 2件')) "$mode の日本語表示が不正です。"
+        Assert-Acceptance ($response.Code -eq 1 -and (Test-Progress $response.Error) -and $response.Text.Contains('範囲外の変更: 4件') -and $response.Text.Contains('開始前からあった変更: 2件')) "$mode の日本語表示が不正です。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の照合が対象・Git状態・開始記録を変更しました。"
 
         $null = Invoke-FixtureGit $directory $commit

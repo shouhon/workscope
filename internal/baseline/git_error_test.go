@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -65,5 +66,46 @@ func TestGitFailureReportsOperationAndExitStatus(t *testing.T) {
 func TestGitOperationDoesNotExposeReferenceNames(t *testing.T) {
 	if got := gitOperation([]string{"show-ref", "--verify", "--quiet", "refs/heads/private"}); got != "git show-ref --verify --quiet <伏字>" {
 		t.Fatalf("参照名が伏字になっていません: %s", got)
+	}
+}
+
+func TestGitContextRedactsPathsAndUnknownEnvironmentNames(t *testing.T) {
+	c := gitContext{executable: filepath.Join(t.TempDir(), "private-token", "git.exe"), directory: filepath.Join(t.TempDir(), "private-project")}
+	for _, key := range []string{"git_config_value_0", "GIT_CONFIG_GLOBAL", "GIT_DIR", "GIT_PRIVATE_CREDENTIAL_NAME"} {
+		c.omit(key)
+	}
+	text := c.String()
+	for _, want := range []string{diagnosticPath(c.executable), diagnosticPath(c.directory), "その他のGIT_*: 1件を除外", "読込結果は未確認"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("実行情報に %q がありません", want)
+		}
+	}
+	for _, secret := range []string{"private-token", "private-project", "GIT_PRIVATE_CREDENTIAL_NAME"} {
+		if strings.Contains(text, secret) {
+			t.Error("実行情報に秘密が含まれています")
+		}
+	}
+	if !c.commandConfig || !c.configLocation || !c.repository || diagnosticPath("") != "未特定" {
+		t.Fatal("除外した設定群またはGit未特定の扱いが不正です")
+	}
+}
+
+func TestGitErrorClassificationDistinguishesOwnershipAndPermissions(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		stderr   string
+		category string
+	}{
+		{errors.New("Git失敗"), "fatal: detected dubious ownership; Permission denied", "ownership"},
+		{os.ErrPermission, "", "permission"},
+		{errors.New("Git失敗"), "fatal: Access is denied", "permission"},
+		{exec.ErrNotFound, "", "not_found"},
+		{errors.New("Git失敗"), "fatal: not a git repository", "not_repository"},
+		{errors.New("Git失敗"), "fatal: bad config line 1", "configuration"},
+		{exec.ErrDot, "", "startup"},
+	} {
+		if got := classifyGitError(tc.err, tc.stderr); !strings.HasPrefix(got, tc.category+"（") {
+			t.Errorf("分類=%s、期待=%s", got, tc.category)
+		}
 	}
 }

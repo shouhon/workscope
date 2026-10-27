@@ -21,6 +21,16 @@
 | 7. 対象・Git状態・開始記録を許可なく変更しない | `TestBeginRecordsContentIndexAndGitStateWithoutChangingInputs`、`TestBeginProtectsExistingRecordAndReplacesExplicitly`、`TestWindowsFailedReplacementPreservesBaseline`。受入スクリプトで通常・worktree両方の `begin`、`check`、ヘルプ、版表示、引数エラー、既存記録の拒否、明示した取り直し、破損記録の拒否について対象とGit状態を比較し、許可しない記録更新も検出する |
 | 8. 配列の安定順・JSON・終了コード | `TestCheckSeparatesPreexistingChangesAndReediting`、`TestCheckChangeKindsAndDirectoryBoundaries`、`internal/cli/run_test.go` のJSON・日本語・出力失敗テスト。受入スクリプトで同一状態の出力全体の一致、固定項目と配列、標準出力のJSONオブジェクト1件、標準エラー、終了コード0・1・2・64を確認する |
 | 追加要件9. タスク名ごとの開始記録 | `TestTaskRecordsCoexistAndSelectIndependentBaselines`、`TestTaskRecordsCanPrecedeDefaultRecord`、`TestTaskNamesRejectUnsafeAndAmbiguousArguments`、`TestTaskRecordsProtectMismatchedAndUnreadableState`、保存時の競合テスト、`TestWindowsFailedReplacementPreservesBaseline`、CLIのタスク引数・表示テスト。受入スクリプトで従来の記録と複数タスクの併存、開始時点・許容範囲、未記録名と上書きの拒否、選択した記録だけの取り直しを通常・worktreeの両方で確認する |
+| 追加要件10. Git診断・進捗・個別ヘルプ | `TestOwnershipDiagnosticExplainsDirectGitDifference` で、環境設定を渡した直接Gitの成功と、内部Gitの所有権エラー、診断の伏字、開始記録の保持、案内した登録方法での復旧を確認する。`TestGitContextRedactsPathsAndUnknownEnvironmentNames` と分類テストで秘密の除外と分類を確認する。`TestSlowGitReportsProgressSeparatelyFromJSON`、`TestProgressRemainsVisibleWhileFileReadWaits`、`TestProgressCountsEachSnapshotWithoutIgnoredOrStateFiles` でGit待ち・走査・件数・JSONとの分離を確認する。`TestSubcommandHelpDoesNotNeedGitOrWriteState` と受入スクリプトで個別ヘルプの非破壊性を確認する |
+
+## Git診断・進捗・個別ヘルプの確認結果（2026-10-27）
+
+- 基点は `c4b4e39fcd7c882bf7cf47a3cb87555da7b7b51d`。今回の製品コード、テスト、利用手順、検証スクリプトを加えたソースを確認した。CLI版を機能追加により `0.4.0` から `0.5.0` へ更新し、保存・JSON形式は `schema_version: 1` と既存の終了コードを維持した。
+- `checkstamp run --label cli-diagnostics-final --input cmd --input internal --input scripts --input go.mod --input .github --input AGENTS.md --input docs/requirements.md --input docs/usage.md --input docs/architecture.md --json-summary -- pwsh -NoProfile -File ./scripts/verify.ps1` が成功した。実行IDは `17059b9b37d66c2eb8040f890a540a9f`。同じ作業ディレクトリで `checkstamp status` が `valid`、子の終了コードが0であることを確認した。この結果を記す受入・開発計画文書は検証入力へ含めていない。
+- 整形、静的検査、全Goテスト、Windowsビルド、個別ヘルプを含むヘルプ・版表示、通常・worktreeの受入確認、既存のRelease判定テストが成功した。実行ファイルの表示は正本と同じ `workscope 0.5.0`。SHA-256は `9EA6733DA194336FA5ABB2FEE0D333D1470BE40FEB6AFA014B4D60A37066FB76`。
+- 所有者そのものは変更せず、一時リポジトリと隔離したホームでGitの所有権拒否を再現した。直接Gitには対象だけの `safe.directory` を環境設定で渡し、内部Gitでは除外される条件を確認した。内部Gitと同じく `GIT_*` を除いた子環境で通常のグローバル設定へ明示登録すると、`begin`・`check` が成功する。別の設定ファイルと親の環境は変更せず、利用者の実際のホーム・Git設定には書き込んでいない。元の指摘が発生した利用者環境そのものの原因は未確認である。
+- テスト用Gitの待機中も進捗を表示でき、JSONが標準出力の1件であることを確認した。走査では追跡済み・未追跡の3件を取得回ごとに数え、無視対象と状態保存先を件数へ含めない。ヘルプはGit未導入の一時環境でも0で終了し、開始記録を作らない。
+- 読み取り専用の補助担当が独立確認し、親の `GIT_CONFIG_GLOBAL` が残ったままでは案内した登録先と内部Gitの参照先がずれる点を指摘した。主担当が子環境を使う案内と復旧テストへ修正し、最終ソースへ必須検証を再実行した。修正後の検証と最終判断は主担当による。
 
 ## タスク別記録の確認結果（2026-10-26）
 

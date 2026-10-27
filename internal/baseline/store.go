@@ -165,7 +165,7 @@ func (r *repository) save(record Record, previous []byte) error {
 }
 
 // Begin は現在の作業ディレクトリのGitルートに、本文を含まない開始記録を保存する。
-func Begin(dir string, names []string, replace bool, task string) (Result, int) {
+func Begin(dir string, names []string, replace bool, task string, observers ...Observer) (Result, int) {
 	result := NewResult()
 	result.Task = task
 	if !validTask(task) {
@@ -180,17 +180,21 @@ func Begin(dir string, names []string, replace bool, task string) (Result, int) 
 		result.Issues = append(result.Issues, Issue{Code: "missing_allow", Message: "--allow を1つ以上指定してください。"})
 		return result, 64
 	}
+	progress := newProgress(observers)
 	err := func() error {
-		r, err := openRepository(dir)
+		progress.stage("Git作業場所の確認")
+		r, err := openRepository(dir, progress)
 		if err != nil {
 			return err
 		}
 		defer r.fs.Close()
 		result.Root = r.root
+		progress.stage("許容範囲の確認")
 		allow, err := r.normalizeAllow(names)
 		if err != nil {
 			return err
 		}
+		progress.stage("開始記録の確認")
 		previous, err := r.existing(task)
 		if err != nil {
 			return err
@@ -208,6 +212,7 @@ func Begin(dir string, names []string, replace bool, task string) (Result, int) 
 		if len(snapshot.Issues) != 0 {
 			return &failure{issue: snapshot.Issues[0]}
 		}
+		progress.stage("許容範囲の再確認")
 		confirmed, err := r.normalizeAllow(names)
 		if err != nil {
 			return err
@@ -216,6 +221,7 @@ func Begin(dir string, names []string, replace bool, task string) (Result, int) 
 			return fail("snapshot_changed", "記録中に許容対象の種類や実体が変化しました。", "")
 		}
 		record := Record{SchemaVersion: SchemaVersion, Tool: "workscope", ID: token(), Task: task, Root: r.root, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Head: snapshot.Head, Allow: allow, Coverage: result.Coverage, PreexistingChanges: snapshot.Changes, Files: snapshot.Files, Index: snapshot.Index}
+		progress.stage("開始記録の保存")
 		if err := r.save(record, previous); err != nil {
 			return err
 		}

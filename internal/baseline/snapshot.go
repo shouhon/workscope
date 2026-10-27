@@ -157,6 +157,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 			continue
 		}
 		entries[pathKey(name)] = entry
+		r.progress.file(entry)
 	}
 	var walk func(string) error
 	walk = func(dir string) error {
@@ -223,6 +224,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 				continue
 			}
 			entries[pathKey(name)] = entry
+			r.progress.file(entry)
 			if !tracked[name] {
 				s.Changes = append(s.Changes, GitChange{name, "??"})
 			}
@@ -233,7 +235,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 		s.Issues = append(s.Issues, describeError(err))
 	}
 	// 未追跡ファイルは上でリンクをたどらず列挙済み。Gitには追跡済みだけを問い合わせる。
-	data, err := git(r.root, nil, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all", "--no-renames")
+	data, err := r.git(nil, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all", "--no-renames")
 	if err != nil {
 		return s, failGit("status_unreadable", "Gitの変更状態を読み取れません。", err)
 	}
@@ -275,10 +277,12 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 }
 
 func (r *repository) stableSnapshot(previous []Entry) (snapshot, error) {
+	r.progress.pass(1)
 	first, err := r.collect(previous)
 	if err != nil {
 		return first, err
 	}
+	r.progress.pass(2)
 	second, err := r.collect(previous)
 	if err != nil {
 		return second, err

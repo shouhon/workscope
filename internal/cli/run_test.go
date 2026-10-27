@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -33,6 +34,46 @@ func TestHelp(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSubcommandHelpDoesNotNeedGitOrWriteState(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("PATH", t.TempDir())
+	for _, command := range []string{"begin", "check"} {
+		for _, flags := range [][]string{{"--help"}, {"-h"}, {"--json", "--help"}} {
+			args := append([]string{command}, flags...)
+			var stdout, stderr bytes.Buffer
+			if code := cli.Run(args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+				t.Fatalf("%v のヘルプ表示失敗: %d %s", args, code, &stderr)
+			}
+			for _, want := range []string{"使い方:", "引数:", "使用例:", "--task <名前>", "終了コード:"} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("%v のヘルプに %q がありません", args, want)
+				}
+			}
+			if command == "begin" && !strings.Contains(stdout.String(), "必須。Gitルートからの相対パス") {
+				t.Fatal("必須引数の説明がありません")
+			}
+		}
+	}
+	children, err := os.ReadDir(dir)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("ヘルプ表示で状態を作成しました: %v %v", children, err)
+	}
+}
+
+func validProgress(text string) bool {
+	if text == "" {
+		return true
+	}
+	line := regexp.MustCompile(`^進捗: (Git待ち: git [A-Za-z0-9 =<>_./伏字-]+|処理の準備|Git作業場所の確認|許容範囲の確認|開始記録の確認|ファイル走査|許容範囲の再確認|開始記録の保存|開始後の変更の照合|開始記録の再確認|処理終了) \| 確認済みファイル: [0-9]+件 \| 取得: [0-2]/2回目 \| 経過: [0-9]+\.[0-9]秒$`)
+	for _, value := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if !line.MatchString(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestVersion(t *testing.T) {
@@ -103,7 +144,7 @@ func TestBeginJSONAndReadOnlyCommands(t *testing.T) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		t.Fatalf("JSONが1件ではありません: %v", err)
 	}
-	if result.Status != "recorded" || result.Command != "begin" || result.Tool != "workscope" || result.SchemaVersion != 1 || result.BaselineID == "" || result.ChangesSinceBegin == nil || result.IndexChanges == nil || result.OutOfScopeChanges == nil || result.Issues == nil || stderr.Len() != 0 {
+	if result.Status != "recorded" || result.Command != "begin" || result.Tool != "workscope" || result.SchemaVersion != 1 || result.BaselineID == "" || result.ChangesSinceBegin == nil || result.IndexChanges == nil || result.OutOfScopeChanges == nil || result.Issues == nil || !validProgress(stderr.String()) {
 		t.Fatalf("出力契約が不正: %+v / %s", result, &stderr)
 	}
 	name := filepath.Join(dir, ".workscope", "baseline.json")
@@ -111,14 +152,14 @@ func TestBeginJSONAndReadOnlyCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"--help"}, {"--version"}, {"check", "--json"}, {"begin", "--allow", "日本語 空白.txt", "--json"}} {
+	for _, args := range [][]string{{"--help"}, {"--version"}, {"begin", "--help"}, {"check", "-h"}, {"check", "--json"}, {"begin", "--allow", "日本語 空白.txt", "--json"}} {
 		stdout.Reset()
 		stderr.Reset()
 		code := cli.Run(args, &stdout, &stderr)
-		if args[0] == "check" && (code != 0 || !strings.Contains(stdout.String(), `"status":"within_scope"`)) {
+		if args[0] == "check" && args[1] == "--json" && (code != 0 || !strings.Contains(stdout.String(), `"status":"within_scope"`)) {
 			t.Fatalf("照合成功の契約が不正: %d %s", code, &stdout)
 		}
-		if args[0] == "begin" && (code != 2 || !strings.Contains(stdout.String(), `"status":"unknown"`)) {
+		if args[0] == "begin" && args[1] != "--help" && (code != 2 || !strings.Contains(stdout.String(), `"status":"unknown"`)) {
 			t.Fatalf("既存記録の失敗契約が不正: %d %s", code, &stdout)
 		}
 		after, err := os.ReadFile(name)
@@ -148,7 +189,7 @@ func TestCheckJSONAndTextOutputContracts(t *testing.T) {
 		if jsonOutput {
 			args = append(args, "--json")
 		}
-		if code := cli.Run(args, &stdout, &stderr); code != 1 || stderr.Len() != 0 {
+		if code := cli.Run(args, &stdout, &stderr); code != 1 || !validProgress(stderr.String()) {
 			t.Fatalf("範囲外の出力失敗: %d %s / %s", code, &stdout, &stderr)
 		}
 		if jsonOutput {
@@ -192,7 +233,7 @@ func TestCheckJSONUnknownAndInvalidArguments(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		code := cli.Run(tc.args, &stdout, &stderr)
 		var result baseline.Result
-		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != tc.code || result.Status != tc.status || result.Command != "check" || result.Coverage.Complete || len(result.Issues) == 0 || stderr.Len() != 0 {
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != tc.code || result.Status != tc.status || result.Command != "check" || result.Coverage.Complete || len(result.Issues) == 0 || !validProgress(stderr.String()) {
 			t.Fatalf("失敗時のJSON契約が不正: %v %d %s / %s / %v", tc.args, code, &stdout, &stderr, err)
 		}
 	}
@@ -205,7 +246,7 @@ func TestBeginOutsideGitReturnsUnknownJSON(t *testing.T) {
 		t.Fatalf("終了コード = %d", code)
 	}
 	var result baseline.Result
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Status != "unknown" || stderr.Len() != 0 {
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Status != "unknown" || !validProgress(stderr.String()) {
 		t.Fatalf("判定不能のJSONが不正: %s / %s / %v", &stdout, &stderr, err)
 	}
 }
@@ -223,7 +264,7 @@ func TestTaskArgumentsJSONAndText(t *testing.T) {
 		{"check", "--task=" + task, "--json"},
 	} {
 		var stdout, stderr bytes.Buffer
-		if code := cli.Run(args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		if code := cli.Run(args, &stdout, &stderr); code != 0 || !validProgress(stderr.String()) {
 			t.Fatalf("タスクの実行失敗: %d %s / %s", code, &stdout, &stderr)
 		}
 		var result baseline.Result
@@ -245,7 +286,7 @@ func TestTaskArgumentsJSONAndText(t *testing.T) {
 		{"check", "--task", "表示用"},
 	} {
 		var stdout, stderr bytes.Buffer
-		if code := cli.Run(args, &stdout, &stderr); code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `タスク: "表示用"`) {
+		if code := cli.Run(args, &stdout, &stderr); code != 0 || !validProgress(stderr.String()) || !strings.Contains(stdout.String(), `タスク: "表示用"`) {
 			t.Fatalf("タスクの日本語表示が不正: %d %s / %s", code, &stdout, &stderr)
 		}
 		if args[0] == "begin" && !strings.Contains(stdout.String(), "/.workscope/"+baseline.RecordName("表示用")) {

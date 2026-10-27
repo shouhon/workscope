@@ -8,7 +8,7 @@ import (
 )
 
 // Check は開始記録と現在の状態を照合する。対象と開始記録には書き込まない。
-func Check(dir, task string) (Result, int) {
+func Check(dir, task string, observers ...Observer) (Result, int) {
 	result := NewResult()
 	result.Command = "check"
 	result.Task = task
@@ -18,13 +18,16 @@ func Check(dir, task string) (Result, int) {
 		result.Issues = append(result.Issues, Issue{Code: "invalid_task", Message: invalidTaskMessage})
 		return result, 64
 	}
+	progress := newProgress(observers)
 	err := func() error {
-		r, err := openRepository(dir)
+		progress.stage("Git作業場所の確認")
+		r, err := openRepository(dir, progress)
 		if err != nil {
 			return err
 		}
 		defer r.fs.Close()
 		result.Root = r.root
+		progress.stage("開始記録の確認")
 		data, err := r.existing(task)
 		if err != nil {
 			return err
@@ -49,7 +52,9 @@ func Check(dir, task string) (Result, int) {
 		if current.Head != record.Head {
 			result.Issues = append(result.Issues, Issue{Code: "head_changed", Message: "開始時からHEADが変わったため、完全な照合はできません。"})
 		}
+		progress.stage("開始後の変更の照合")
 		result.compare(record, current)
+		progress.stage("開始記録の再確認")
 		confirmed, err := r.existing(task)
 		if err != nil || !bytes.Equal(data, confirmed) {
 			return fail("baseline_changed", "照合中に開始記録が変化したか、読み取れなくなりました。再実行してください。", stateName+"/"+RecordName(task))
