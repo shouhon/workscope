@@ -21,7 +21,19 @@ func TestMain(m *testing.M) {
 	// テスト用Gitとして起動された場合だけ、指定した操作を失敗させる。
 	if target := os.Getenv("WORKSCOPE_TEST_GIT_OPERATION"); target != "" {
 		args := os.Args[1:]
-		if len(args) >= 7 && strings.Join(args[7:], " ") == target {
+		start := 0
+	globalArguments:
+		for start < len(args) {
+			switch args[start] {
+			case "--no-optional-locks":
+				start++
+			case "-C", "-c":
+				start += 2
+			default:
+				break globalArguments
+			}
+		}
+		if start <= len(args) && strings.Join(args[start:], " ") == target {
 			if delay := os.Getenv("WORKSCOPE_TEST_GIT_DELAY"); delay != "" {
 				duration, err := time.ParseDuration(delay)
 				if err != nil {
@@ -77,10 +89,20 @@ func installTestGit(t *testing.T) (string, string) {
 func TestGitUnavailableOutputAndExitCodes(t *testing.T) {
 	gitPath, helperDir := installTestGit(t)
 	t.Chdir(t.TempDir())
-	for _, startupFailure := range []bool{false, true} {
-		t.Run(fmt.Sprintf("起動失敗=%t", startupFailure), func(t *testing.T) {
-			if startupFailure {
-				t.Setenv("PATH", t.TempDir())
+	for _, failure := range []string{"permission", "not_found", "startup"} {
+		t.Run(failure, func(t *testing.T) {
+			if failure == "not_found" || failure == "startup" {
+				emptyPath := t.TempDir()
+				if failure == "startup" {
+					name := "git"
+					if runtime.GOOS == "windows" {
+						name += ".exe"
+					}
+					if err := os.WriteFile(filepath.Join(emptyPath, name), []byte("実行ファイルではない"), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Setenv("PATH", emptyPath)
 			} else {
 				t.Setenv("PATH", helperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 				t.Setenv("WORKSCOPE_TEST_GIT_OPERATION", "rev-parse --show-toplevel")
@@ -88,53 +110,66 @@ func TestGitUnavailableOutputAndExitCodes(t *testing.T) {
 			}
 			for _, command := range []string{"begin", "check"} {
 				for _, jsonOutput := range []bool{false, true} {
-					args := []string{command}
-					if command == "begin" {
-						args = append(args, "--allow", "new.txt")
-					}
-					if jsonOutput {
-						args = append(args, "--json")
-					}
-					var stdout, stderr bytes.Buffer
-					if code := cli.Run(args, &stdout, &stderr); code != 2 {
-						t.Fatalf("%v の判定不能が終了コード2ではありません: %d", args, code)
-					}
-					var text string
-					if jsonOutput {
-						var result baseline.Result
-						decoder := json.NewDecoder(&stdout)
-						if err := decoder.Decode(&result); err != nil {
-							t.Fatal(err)
+					for _, verbose := range []bool{false, true} {
+						args := []string{command}
+						if command == "begin" {
+							args = append(args, "--allow", "new.txt")
 						}
-						if decoder.Decode(new(any)) != io.EOF || !validProgress(stderr.String()) || result.Status != "unknown" || result.Command != command || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Code != "git_unavailable" {
-							t.Fatalf("%v のJSON契約が不正: %+v / %s", args, result, &stderr)
+						if jsonOutput {
+							args = append(args, "--json")
 						}
-						text = result.Issues[0].Message
-					} else if command == "begin" {
-						if stdout.Len() != 0 {
-							t.Fatal("beginの失敗時に標準出力があります")
+						if verbose {
+							args = append(args, "--verbose")
 						}
-						text = stderr.String()
-					} else {
-						if !validProgress(stderr.String()) {
-							t.Fatal("checkの結果以外に診断を出力しています")
+						var stdout, stderr bytes.Buffer
+						if code := cli.Run(args, &stdout, &stderr); code != 2 {
+							t.Fatalf("%v の判定不能が終了コード2ではありません: %d", args, code)
 						}
-						text = stdout.String()
-					}
-					wants := []string{"失敗したGit操作: git rev-parse --show-toplevel", "標準エラー（伏字済み）:"}
-					if startupFailure {
-						wants = append(wants, "起動エラー: PATH上にGitの実行ファイルが見つかりません。", "Gitの終了コード: 未取得（起動失敗）", "標準エラー（伏字済み）: （空）")
-					} else {
-						wants = append(wants, "起動エラー: なし", "Gitの終了コード: 1", "permission denied")
-					}
-					for _, want := range wants {
-						if !strings.Contains(text, want) {
-							t.Errorf("%v の診断に %q がありません: %s", args, want, text)
+						var text string
+						if jsonOutput {
+							var result baseline.Result
+							decoder := json.NewDecoder(&stdout)
+							if err := decoder.Decode(&result); err != nil {
+								t.Fatal(err)
+							}
+							wantCode := map[string]string{"permission": "git_permission_denied", "not_found": "git_not_found", "startup": "git_start_failed"}[failure]
+							if decoder.Decode(new(any)) != io.EOF || !validProgress(stderr.String()) || result.Status != "unknown" || result.Command != command || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Code != wantCode || (result.Issues[0].Details != "") != verbose {
+								t.Fatalf("%v のJSON契約が不正: %+v / %s", args, result, &stderr)
+							}
+							text = result.Issues[0].Message + result.Issues[0].Details
+						} else if command == "begin" {
+							if stdout.Len() != 0 {
+								t.Fatal("beginの失敗時に標準出力があります")
+							}
+							text = stderr.String()
+						} else {
+							if !validProgress(stderr.String()) {
+								t.Fatal("checkの結果以外に診断を出力しています")
+							}
+							text = stdout.String()
 						}
-					}
-					for _, secret := range []string{"private", "password", "token=", "\x1b"} {
-						if strings.Contains(text, secret) {
-							t.Errorf("%v の診断に伏せていない値があります", args)
+						wants := []string{"失敗したGit操作: git rev-parse --show-toplevel", "原因:", "次の対処:"}
+						if verbose {
+							wants = append(wants, "標準エラー（伏字済み）:", "パスSHA-256:", "親のGit環境変数:")
+							if failure == "not_found" {
+								wants = append(wants, "起動エラー: PATH上にGitの実行ファイルが見つかりません。", "Gitの終了コード: 未取得（起動失敗）", "標準エラー（伏字済み）: （空）")
+							} else if failure == "startup" {
+								wants = append(wants, "Gitの終了コード: 未取得（起動失敗）")
+							} else {
+								wants = append(wants, "起動エラー: なし", "Gitの終了コード: 1", "permission denied")
+							}
+						} else if strings.Contains(text, "パスSHA-256") || strings.Contains(text, "GIT_CONFIG_COUNT") || strings.Contains(text, "標準エラー（伏字済み）") {
+							t.Fatal("通常表示に詳細が混ざっています")
+						}
+						for _, want := range wants {
+							if !strings.Contains(text, want) {
+								t.Errorf("%v の診断に %q がありません: %s", args, want, text)
+							}
+						}
+						for _, secret := range []string{"private", "password", "token=", "\x1b"} {
+							if strings.Contains(text, secret) {
+								t.Errorf("%v の診断に伏せていない値があります", args)
+							}
 						}
 					}
 				}
@@ -159,16 +194,16 @@ func TestGitUnavailableOutputAndExitCodes(t *testing.T) {
 		t.Setenv("PATH", helperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("WORKSCOPE_TEST_GIT_OPERATION", "symbolic-ref -q HEAD")
 		t.Setenv("WORKSCOPE_TEST_REAL_GIT", gitPath)
-		for _, args := range [][]string{{"begin", "--replace", "--allow", "new.txt", "--json"}, {"check", "--json"}} {
+		for _, args := range [][]string{{"begin", "--replace", "--allow", "new.txt", "--json", "--verbose"}, {"check", "--json", "--verbose"}} {
 			stdout.Reset()
 			stderr.Reset()
 			code := cli.Run(args, &stdout, &stderr)
 			var result baseline.Result
-			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != 2 || result.Status != "unknown" || len(result.Issues) != 1 || result.Issues[0].Code != "head_unreadable" || !validProgress(stderr.String()) {
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != 2 || result.Status != "unknown" || len(result.Issues) != 1 || result.Issues[0].Code != "git_permission_denied" || !validProgress(stderr.String()) {
 				t.Fatalf("HEAD確認失敗の出力契約が不正: %d %s / %s / %v", code, &stdout, &stderr, err)
 			}
 			for _, want := range []string{"git rev-parse --verify HEAD", "git symbolic-ref -q HEAD", "permission denied", "Gitの終了コード: 1"} {
-				if !strings.Contains(result.Issues[0].Message, want) {
+				if !strings.Contains(result.Issues[0].Details, want) {
 					t.Errorf("HEAD確認の診断に %q がありません", want)
 				}
 			}
@@ -182,7 +217,7 @@ func TestGitUnavailableOutputAndExitCodes(t *testing.T) {
 
 func TestOwnershipDiagnosticExplainsDirectGitDifference(t *testing.T) {
 	gitPath, helperDir := installTestGit(t)
-	// 復旧手順が通常のグローバル設定を書いても、実環境へ触れない。
+	// 所有権拒否と復旧を、利用者の設定から隔離して確認する。
 	normalHome := t.TempDir()
 	t.Setenv("HOME", normalHome)
 	t.Setenv("USERPROFILE", normalHome)
@@ -220,48 +255,75 @@ func TestOwnershipDiagnosticExplainsDirectGitDifference(t *testing.T) {
 	t.Setenv("LC_ALL", "C")
 	t.Setenv("LANGUAGE", "C")
 	t.Chdir(dir)
+	localConfig, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{{"begin", "--replace", "--allow", "new.txt", "--json"}, {"check", "--json"}} {
-		var stdout, stderr bytes.Buffer
-		if code := cli.Run(args, &stdout, &stderr); code != 2 || !validProgress(stderr.String()) {
-			t.Fatalf("所有権の失敗契約が不正: %d %s / %s", code, &stdout, &stderr)
-		}
-		var result baseline.Result
-		decoder := json.NewDecoder(&stdout)
-		if err := decoder.Decode(&result); err != nil || decoder.Decode(new(any)) != io.EOF || result.Status != "unknown" || len(result.Issues) != 1 {
-			t.Fatalf("所有権失敗のJSONが不正: %+v %v", result, err)
-		}
-		message := result.Issues[0].Message
-		for _, want := range []string{"エラー分類: ownership", "Gitの実行ファイル（PATHで選択）:", "作業場所（git -C）:", "パスSHA-256:", "GIT_CONFIG_COUNT/KEY_*/VALUE_*/PARAMETERS: あり（引き継がない）", "GIT_CONFIG/GLOBAL/SYSTEM/NOSYSTEM: あり（引き継がない）", "config --global --add safe.directory", "親のGIT_*をすべて除外した一時的な子環境", "Gitルート1件だけ", "権限昇格は自動で行いません"} {
-			if !strings.Contains(message, want) {
-				t.Errorf("所有権の診断に %q がありません: %s", want, message)
+		for _, verbose := range []bool{false, true} {
+			callArgs := append([]string{}, args...)
+			if verbose {
+				callArgs = append(callArgs, "--verbose")
+			}
+			var stdout, stderr bytes.Buffer
+			if code := cli.Run(callArgs, &stdout, &stderr); code != 2 || !validProgress(stderr.String()) {
+				t.Fatalf("所有権の失敗契約が不正: %d %s / %s", code, &stdout, &stderr)
+			}
+			var result baseline.Result
+			decoder := json.NewDecoder(&stdout)
+			if err := decoder.Decode(&result); err != nil || decoder.Decode(new(any)) != io.EOF || result.Status != "unknown" || len(result.Issues) != 1 || result.Issues[0].Code != "git_ownership_rejected" {
+				t.Fatalf("所有権失敗のJSONが不正: %+v %v", result, err)
+			}
+			message := result.Issues[0].Message
+			for _, want := range []string{"失敗したGit操作:", "原因: Gitがリポジトリの所有権確認で拒否", "次の対処:", "--trust-repository <絶対パス>", "この実行だけ"} {
+				if !strings.Contains(message, want) {
+					t.Errorf("所有権の診断に %q がありません: %s", want, message)
+				}
+			}
+			if strings.Contains(message, "パスSHA-256") || strings.Contains(message, "--global") || (result.Issues[0].Details != "") != verbose {
+				t.Fatal("診断の要約と詳細が分離されていません")
+			}
+			if verbose {
+				for _, want := range []string{"エラー分類: ownership", "Gitの実行ファイル（PATHで選択）:", "作業場所（git -C）:", "パスSHA-256:", "GIT_CONFIG_COUNT/KEY_*/VALUE_*/PARAMETERS: あり（引き継がない）", "GIT_CONFIG/GLOBAL/SYSTEM/NOSYSTEM: あり（引き継がない）"} {
+					if !strings.Contains(result.Issues[0].Details, want) {
+						t.Errorf("所有権の詳細に %q がありません", want)
+					}
+				}
+			}
+			message += result.Issues[0].Details
+			for _, secret := range []string{dir, filepath.ToSlash(dir), config, helperDir, "safe.directory=*", "GIT_CONFIG_VALUE_0="} {
+				if strings.Contains(message, secret) {
+					t.Error("診断に伏せていないパスや危険な設定が含まれます")
+				}
+			}
+			after, err := os.ReadFile(recordPath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("所有権エラー時に開始記録が変更されました")
 			}
 		}
-		for _, secret := range []string{dir, filepath.ToSlash(dir), config, helperDir, "safe.directory=*", "GIT_CONFIG_VALUE_0="} {
-			if strings.Contains(message, secret) {
-				t.Error("診断に伏せていないパスや危険な設定が含まれます")
-			}
-		}
-		after, err := os.ReadFile(recordPath)
-		if err != nil || !bytes.Equal(before, after) {
-			t.Fatal("所有権エラー時に開始記録が変更されました")
-		}
-	}
-	// 利用ガイドと同じく、親の環境を変えずGIT_*だけを除いた子環境で登録する。
-	register := exec.Command(gitPath, "config", "--global", "--add", "safe.directory", filepath.ToSlash(dir))
-	for _, value := range os.Environ() {
-		key, _, _ := strings.Cut(value, "=")
-		if !strings.HasPrefix(strings.ToUpper(key), "GIT_") {
-			register.Env = append(register.Env, value)
-		}
-	}
-	if output, err := register.CombinedOutput(); err != nil {
-		t.Fatalf("一時ホーム内の明示的な登録失敗: %v %s", err, output)
 	}
 	for _, args := range [][]string{{"check", "--json"}, {"begin", "--replace", "--allow", "new.txt", "--json"}} {
 		var stdout, stderr bytes.Buffer
+		args = append(args, "--trust-repository", dir)
 		if code := cli.Run(args, &stdout, &stderr); code != 0 || !validProgress(stderr.String()) {
-			t.Fatalf("案内した登録後も所有権エラーが続きました: %d %s / %s", code, &stdout, &stderr)
+			t.Fatalf("一時的な信頼指定で復旧できません: %d %s / %s", code, &stdout, &stderr)
 		}
+		if args[0] == "check" {
+			after, err := os.ReadFile(recordPath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("一時的な信頼指定のcheckが開始記録を変更しました")
+			}
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run([]string{"check", "--json"}, &stdout, &stderr); code != 2 {
+		t.Fatal("信頼指定が別の実行へ残りました")
+	}
+	if _, err := os.Stat(filepath.Join(normalHome, ".gitconfig")); !os.IsNotExist(err) {
+		t.Fatal("恒久的なGit設定が作られました")
+	}
+	if after, err := os.ReadFile(filepath.Join(dir, ".git", "config")); err != nil || !bytes.Equal(localConfig, after) {
+		t.Fatal("リポジトリの設定が変わりました")
 	}
 	if alternate, err := os.ReadFile(config); err != nil || len(alternate) != 0 {
 		t.Fatal("上書き用の別設定ファイルへ登録してしまいました")

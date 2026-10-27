@@ -7,6 +7,12 @@ type Issue struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Path    string `json:"path,omitempty"`
+	Details string `json:"details,omitempty"`
+}
+
+// Options は今回の実行だけに適用する設定であり、開始記録へ保存しない。
+type Options struct {
+	TrustRepository string
 }
 
 type Coverage struct {
@@ -110,8 +116,10 @@ type failure struct {
 	invalid bool
 }
 
-func (f *failure) Error() string            { return f.issue.Message }
-func fail(code, message, path string) error { return &failure{issue: Issue{code, message, path}} }
+func (f *failure) Error() string { return f.issue.Message }
+func fail(code, message, path string) error {
+	return &failure{issue: Issue{Code: code, Message: message, Path: path}}
+}
 func invalid(message, path string) error {
-	return &failure{issue: Issue{"invalid_allow", message, path}, invalid: true}
+	return &failure{issue: Issue{Code: "invalid_allow", Message: message, Path: path}, invalid: true}
 }

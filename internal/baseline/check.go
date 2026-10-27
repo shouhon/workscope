@@ -3,12 +3,18 @@ package baseline
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 )
 
 // Check は開始記録と現在の状態を照合する。対象と開始記録には書き込まない。
 func Check(dir, task string, observers ...Observer) (Result, int) {
+	return CheckWithOptions(dir, task, Options{}, observers...)
+}
+
+// CheckWithOptions は今回だけのGit設定で照合し、開始記録や設定には書き込まない。
+func CheckWithOptions(dir, task string, options Options, observers ...Observer) (Result, int) {
 	result := NewResult()
 	result.Command = "check"
 	result.Task = task
@@ -21,7 +27,7 @@ func Check(dir, task string, observers ...Observer) (Result, int) {
 	progress := newProgress(observers)
 	err := func() error {
 		progress.stage("Git作業場所の確認")
-		r, err := openRepository(dir, progress)
+		r, err := openRepositoryWithOptions(dir, options, progress)
 		if err != nil {
 			return err
 		}
@@ -67,6 +73,11 @@ func Check(dir, task string, observers ...Observer) (Result, int) {
 	result.Issues = sortedIssues(result.Issues)
 	if len(result.Issues) != 0 {
 		result.Coverage.Complete = false
+		var f *failure
+		if errors.As(err, &f) && f.invalid {
+			result.Status = "invalid_arguments"
+			return result, 64
+		}
 		return result, 2
 	}
 	if len(result.OutOfScopeChanges) != 0 {

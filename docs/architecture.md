@@ -29,7 +29,9 @@ Goの単一モジュール `workscope` から、Windows用の実行ファイル�
 
 Gitの呼び出しは `os/exec` の引数配列で行い、ファイル名をシェルの命令に組み込まない。Gitルートを明示し、パスを含む出力はNUL区切りで扱う。`git status` は通常インデックスを更新し得るため、読み取り用途では `--no-optional-locks` を付ける。[Git statusの仕様](https://git-scm.com/docs/git-status)と[Git diffの仕様](https://git-scm.com/docs/git-diff)を解析処理の根拠とする。
 
-Gitの失敗では、実際に起動を試みた `exec.Cmd.Path` と `git -C` の作業場所を、絶対パスのSHA-256識別子だけで表示する。生のパス・設定値・標準エラーを診断へ追加しない。`GIT_*` の除外は維持し、既知の設定群の有無と、その他の除外件数を表示する。所有権などの分類は既知の診断語句と起動エラーから決め、通常の設定ファイルの読込結果は未確認として扱う。診断用に追加のGit操作や自動再試行は行わない。
+Gitの失敗は、操作・原因・対処の要約と、伏字済みの詳細に分ける。`issues[].code` で未検出・起動失敗・所有権拒否などを区別し、CLIは `--verbose` の場合だけ詳細を表示する。JSONでも同じ条件で `issues[].details` を含める。実際に起動を試みた `exec.Cmd.Path` と `git -C` の作業場所は、詳細に絶対パスのSHA-256識別子だけで表示する。生のパス・設定値・標準エラーを診断へ追加しない。`GIT_*` の除外は維持し、詳細では既知の設定群の有無と、その他の除外件数を表示する。分類は既知の診断語句と起動エラーから決め、通常の設定ファイルの読込結果は未確認として扱う。診断用に追加のGit操作や自動再試行は行わない。
+
+`--trust-repository` は検証した絶対パスを `Options` で開始記録・照合から各Git呼出しへ渡す。最初のルート取得から `-c safe.directory= -c safe.directory=<指定ルート>` を付け、取得したGitルートと指定パスの実体が一致してから走査・保存へ進む。全件信頼や配下全体の指定を受け付けず、他のworktreeへ信頼を広げない。親のGit環境変数は引き継がず、開始記録とGitの設定ファイルにも保存しない。[Gitの保護された設定](https://git-scm.com/docs/git-config#SCOPES)と[コマンド単位の設定](https://git-scm.com/docs/git#Documentation/git.txt--cltnamegtltvaluegt)を根拠とする。
 
 分類に使う診断語句を安定させるため、子Gitだけに `LC_ALL=C` と `LANGUAGE=C` を指定する。CLIの日本語表示や呼出元の環境変数は変更しない。
 

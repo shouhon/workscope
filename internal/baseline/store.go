@@ -166,6 +166,11 @@ func (r *repository) save(record Record, previous []byte) error {
 
 // Begin は現在の作業ディレクトリのGitルートに、本文を含まない開始記録を保存する。
 func Begin(dir string, names []string, replace bool, task string, observers ...Observer) (Result, int) {
+	return BeginWithOptions(dir, names, replace, task, Options{}, observers...)
+}
+
+// BeginWithOptions は今回だけのGit設定で開始記録を保存する。
+func BeginWithOptions(dir string, names []string, replace bool, task string, options Options, observers ...Observer) (Result, int) {
 	result := NewResult()
 	result.Task = task
 	if !validTask(task) {
@@ -183,7 +188,7 @@ func Begin(dir string, names []string, replace bool, task string, observers ...O
 	progress := newProgress(observers)
 	err := func() error {
 		progress.stage("Git作業場所の確認")
-		r, err := openRepository(dir, progress)
+		r, err := openRepositoryWithOptions(dir, options, progress)
 		if err != nil {
 			return err
 		}

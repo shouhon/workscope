@@ -32,7 +32,7 @@ func TestGitDiagnosticRedactsUntrustedStderr(t *testing.T) {
 func TestGitStartupDiagnosticPreservesOSCauseWithoutPath(t *testing.T) {
 	cause := &os.PathError{Op: "fork/exec", Path: "C:/private/secret/git.exe", Err: syscall.EACCES}
 	err := &gitError{cause: cause, operation: "git rev-parse --show-toplevel", stderr: safeGitStderr("")}
-	text := err.Error()
+	text := err.details()
 	for _, want := range []string{"起動エラー:", "OSエラー番号:", "Gitの終了コード: 未取得（起動失敗）", "標準エラー（伏字済み）: （空）"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("起動エラーに %q がありません: %s", want, text)
@@ -55,7 +55,11 @@ func TestGitFailureReportsOperationAndExitStatus(t *testing.T) {
 	if !errors.As(err, &exited) || exited.ExitCode() == 0 {
 		t.Fatalf("Gitの終了状態を保持していません: %v", err)
 	}
-	text := describeError(failGit("git_unavailable", "Gitルートを特定できません。", err)).Message
+	issue := describeError(failGit("git_failed", "Gitルートを特定できません。", err))
+	if issue.Code != "git_not_repository" || strings.Contains(issue.Message, "パスSHA-256") {
+		t.Fatalf("分類または要約が不正: %+v", issue)
+	}
+	text := issue.Details
 	for _, want := range []string{"失敗したGit操作: git rev-parse --show-toplevel", "起動エラー: なし", "Gitの終了コード:", "not a git repository"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("診断に %q がありません: %s", want, text)

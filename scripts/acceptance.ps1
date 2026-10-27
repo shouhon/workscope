@@ -119,11 +119,15 @@ try {
     foreach ($arguments in @(@('begin', '--allow', 'new.txt'), @('check'))) {
         $unknown = Invoke-JSON $outsideGit $arguments 2 'unknown'
         $message = $unknown.Data.issues[0].message
-        Assert-Acceptance ($unknown.Data.issues[0].code -ceq 'git_unavailable' -and
+        Assert-Acceptance ($unknown.Data.issues[0].code -ceq 'git_not_repository' -and
             $message.Contains('失敗したGit操作: git rev-parse --show-toplevel') -and
-            $message.Contains('起動エラー: なし') -and
-            $message.Contains('Gitの終了コード: 128') -and
-            $message.Contains('not a git repository')) 'Gitを参照できない理由が診断にありません。'
+            $message.Contains('原因:') -and $message.Contains('次の対処:') -and
+            -not $unknown.Data.issues[0].ContainsKey('details') -and
+            -not $message.Contains('パスSHA-256')) 'Git診断の分類または要約が不正です。'
+        $verbose = Invoke-JSON $outsideGit ($arguments + @('--verbose')) 2 'unknown'
+        Assert-Acceptance ($verbose.Data.issues[0].details.Contains('Gitの終了コード: 128') -and
+            $verbose.Data.issues[0].details.Contains('not a git repository') -and
+            $verbose.Data.issues[0].details.Contains('パスSHA-256')) '指定したGit診断の詳細がありません。'
     }
     Assert-Acceptance (-not (Test-Path -LiteralPath (Join-Path $outsideGit '.workscope'))) 'Git外で状態保存先を作成しました。'
     foreach ($mode in @('通常', 'worktree')) {
@@ -149,7 +153,7 @@ try {
         Write-Fixture $directory '未追跡 空白.txt' '開始前の未追跡'
         Write-Fixture $directory 'ignored/hidden.txt' '照合しない本文'
         $before = Get-ProtectedState $directory $false
-        $recorded = Invoke-JSON $subdirectory @('begin', '--allow', 'src\', '--allow', 'SRC', '--allow', '新規\配下') 0 'recorded'
+        $recorded = Invoke-JSON $subdirectory @('begin', '--allow', 'src\', '--allow', 'SRC', '--allow', '新規\配下', '--trust-repository', $directory) 0 'recorded'
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode のbeginが対象・Git状態を変更しました。"
         Assert-Acceptance ($recorded.Data.coverage.complete -and $recorded.Data.preexisting_changes.Count -eq 2) "$mode の開始前の変更または照合範囲が不正です。"
         $before = Get-ProtectedState $directory
@@ -171,6 +175,24 @@ try {
         $null = Invoke-JSON $subdirectory @('begin', '--allow', 'Src') 2 'unknown'
         $null = Invoke-JSON $subdirectory @('begin', '--allow', '../範囲外') 64 'invalid_arguments'
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の表示・拒否したbeginが既存状態を変更しました。"
+
+        # 記録の読取を許したまま置換を拒否し、保存失敗時の終了コードを直接確認する。
+        $recordPath = Join-Path $directory '.workscope/baseline.json'
+        $recordHandle = [System.IO.File]::Open($recordPath, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        try {
+            $failedSave = Invoke-JSON $subdirectory @('begin', '--replace', '--allow', 'Src') 2 'unknown'
+            Assert-Acceptance ($failedSave.Data.issues[0].code -ceq 'save_failed') "$mode の保存失敗を再現できませんでした。"
+            $failedText = Invoke-Captured $executable $subdirectory @('begin', '--replace', '--allow', 'Src')
+            Assert-Acceptance ($failedText.Code -eq 2 -and $failedText.Text -eq '' -and
+                $failedText.Error.Contains('開始記録の置換に失敗')) "$mode の保存失敗時の通常表示または終了コードが不正です。"
+        }
+        finally { $recordHandle.Dispose() }
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の保存失敗で既存状態が変わりました。"
+
+        $null = Invoke-JSON $subdirectory @('check', '--trust-repository', $directory) 0 'within_scope'
+        $null = Invoke-JSON $subdirectory @('check', '--trust-repository', $subdirectory) 64 'invalid_arguments'
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の信頼指定が既存状態を変更しました。"
 
         Write-Fixture $directory 'Src/変更 日本語.txt' '範囲内の変更'
         Write-Fixture $directory 'Src/追加 日本語.txt' '範囲内の追加'

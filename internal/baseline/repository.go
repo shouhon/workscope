@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -17,6 +18,7 @@ type repository struct {
 	fs       *os.Root
 	excluded []string
 	progress *progress
+	options  Options
 }
 
 func git(dir string, input []byte, args ...string) ([]byte, error) {
@@ -24,14 +26,22 @@ func git(dir string, input []byte, args ...string) ([]byte, error) {
 }
 
 func (r *repository) git(input []byte, args ...string) ([]byte, error) {
-	return gitWithProgress(r.root, input, r.progress, args...)
+	return gitWithOptions(r.root, input, r.progress, r.options, args...)
 }
 
 func gitWithProgress(dir string, input []byte, progress *progress, args ...string) ([]byte, error) {
+	return gitWithOptions(dir, input, progress, Options{}, args...)
+}
+
+func gitWithOptions(dir string, input []byte, progress *progress, options Options, args ...string) ([]byte, error) {
 	defer progress.git(args)()
 	base := []string{"--no-optional-locks", "-C", dir, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}
+	if options.TrustRepository != "" {
+		// 既存の広い信頼指定も、この実行では明示した1件だけに絞る。
+		base = append(base, "-c", "safe.directory=", "-c", "safe.directory="+filepath.ToSlash(options.TrustRepository))
+	}
 	cmd := exec.Command("git", append(base, args...)...)
-	diagnostic := gitContext{executable: cmd.Path, directory: dir}
+	diagnostic := gitContext{executable: cmd.Path, directory: dir, trusted: options.TrustRepository != ""}
 	if cmd.Err != nil {
 		diagnostic.executable = ""
 	}
@@ -56,8 +66,8 @@ func gitWithProgress(dir string, input []byte, progress *progress, args ...strin
 	return out, err
 }
 
-func gitLine(dir string, progress *progress, args ...string) (string, error) {
-	out, err := gitWithProgress(dir, nil, progress, args...)
+func gitLine(dir string, progress *progress, options Options, args ...string) (string, error) {
+	out, err := gitWithOptions(dir, nil, progress, options, args...)
 	if err != nil {
 		return "", err
 	}
@@ -68,13 +78,35 @@ func gitLine(dir string, progress *progress, args ...string) (string, error) {
 }
 
 func openRepository(dir string, observers ...*progress) (*repository, error) {
+	return openRepositoryWithOptions(dir, Options{}, observers...)
+}
+
+func invalidTrustRepository() error {
+	return &failure{invalid: true, issue: Issue{Code: "invalid_trust_repository", Message: "--trust-repository は対象のGitルート1件の絶対パスを指定してください。ワイルドカードは使えません。"}}
+}
+
+func openRepositoryWithOptions(dir string, options Options, observers ...*progress) (*repository, error) {
 	var progress *progress
 	if len(observers) != 0 {
 		progress = observers[0]
 	}
-	root, err := gitLine(dir, progress, "rev-parse", "--show-toplevel")
+	if name := options.TrustRepository; name != "" {
+		if !utf8.ValidString(name) || !filepath.IsAbs(name) || strings.ContainsAny(name, "*?[") || strings.ContainsFunc(name, unicode.IsControl) {
+			return nil, invalidTrustRepository()
+		}
+		trusted, err := filepath.EvalSymlinks(filepath.Clean(name))
+		if err != nil {
+			return nil, invalidTrustRepository()
+		}
+		info, err := os.Stat(trusted)
+		if err != nil || !info.IsDir() {
+			return nil, invalidTrustRepository()
+		}
+		options.TrustRepository = trusted
+	}
+	root, err := gitLine(dir, progress, options, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return nil, failGit("git_unavailable", "Gitの作業ディレクトリを特定できません。", err)
+		return nil, failGit("git_failed", "Gitの作業ディレクトリを特定できません。", err)
 	}
 	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
@@ -84,21 +116,28 @@ func openRepository(dir string, observers ...*progress) (*repository, error) {
 	if err != nil {
 		return nil, err
 	}
+	if options.TrustRepository != "" {
+		trusted, trustErr := os.Stat(options.TrustRepository)
+		actual, rootErr := os.Stat(root)
+		if trustErr != nil || rootErr != nil || !os.SameFile(trusted, actual) {
+			return nil, invalidTrustRepository()
+		}
+	}
 	fs, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, fail("root_unreadable", "Gitルートを開けません。", "")
 	}
-	r := &repository{root: root, fs: fs, excluded: []string{".workscope"}, progress: progress}
+	r := &repository{root: root, fs: fs, excluded: []string{".workscope"}, progress: progress, options: options}
 	for _, arg := range []string{"--absolute-git-dir", "--git-common-dir"} {
-		name, err := gitLine(root, progress, "rev-parse", "--path-format=absolute", arg)
+		name, err := gitLine(root, progress, options, "rev-parse", "--path-format=absolute", arg)
 		if err != nil {
 			fs.Close()
-			return nil, failGit("git_unavailable", "Gitの管理領域を特定できません。", err)
+			return nil, failGit("git_metadata_unreadable", "Gitの管理領域を特定できません。", err)
 		}
 		name, err = filepath.EvalSymlinks(name)
 		if err != nil {
 			fs.Close()
-			return nil, fail("git_unavailable", "Gitの管理領域の実体を確認できません。", "")
+			return nil, fail("git_metadata_unreadable", "Gitの管理領域の実体を確認できません。", "")
 		}
 		if rel, err := filepath.Rel(root, name); err == nil && filepath.IsLocal(rel) {
 			r.excluded = append(r.excluded, filepath.ToSlash(rel))
@@ -108,12 +147,12 @@ func openRepository(dir string, observers ...*progress) (*repository, error) {
 }
 
 func (r *repository) head() (string, error) {
-	head, err := gitLine(r.root, r.progress, "rev-parse", "--verify", "HEAD")
+	head, err := gitLine(r.root, r.progress, r.options, "rev-parse", "--verify", "HEAD")
 	if err == nil {
 		return head, nil
 	}
 	// コミットがまだないブランチだけは空のHEADとして扱う。
-	ref, symErr := gitLine(r.root, r.progress, "symbolic-ref", "-q", "HEAD")
+	ref, symErr := gitLine(r.root, r.progress, r.options, "symbolic-ref", "-q", "HEAD")
 	if symErr != nil {
 		return "", failGit("head_unreadable", "HEADを読み取れません。", errors.Join(err, symErr))
 	}

@@ -27,6 +27,7 @@ type gitContext struct {
 	configLocation bool
 	repository     bool
 	other          int
+	trusted        bool
 }
 
 func (c *gitContext) omit(key string) {
@@ -63,12 +64,59 @@ func (c gitContext) String() string {
 		}
 		return "なし"
 	}
-	return fmt.Sprintf("Gitの実行ファイル（PATHで選択）: %s\n  作業場所（git -C）: %s\n  親のGit環境変数: すべて除外（名前と値の任意部分は非表示）\n  GIT_CONFIG_COUNT/KEY_*/VALUE_*/PARAMETERS: %s\n  GIT_CONFIG/GLOBAL/SYSTEM/NOSYSTEM: %s\n  GIT_DIR/WORK_TREE/COMMON_DIR/INDEX_FILEなど: %s\n  その他のGIT_*: %d件を除外\n  通常の設定探索: HOME・USERPROFILE・XDG_CONFIG_HOMEなどは継承（設定ファイルの読込結果は未確認）\n  コマンド内の固定設定: core.fsmonitor=false, core.untrackedCache=false, GIT_OPTIONAL_LOCKS=0, GIT_TERMINAL_PROMPT=0, LC_ALL=C, LANGUAGE=C", diagnosticPath(c.executable), diagnosticPath(c.directory), present(c.commandConfig), present(c.configLocation), present(c.repository), c.other)
+	trust := "なし"
+	if c.trusted {
+		trust = "--trust-repository で指定したGitルート1件だけ（保存しない）"
+	}
+	return fmt.Sprintf("Gitの実行ファイル（PATHで選択）: %s\n  作業場所（git -C）: %s\n  親のGit環境変数: すべて除外（名前と値の任意部分は非表示）\n  GIT_CONFIG_COUNT/KEY_*/VALUE_*/PARAMETERS: %s\n  GIT_CONFIG/GLOBAL/SYSTEM/NOSYSTEM: %s\n  GIT_DIR/WORK_TREE/COMMON_DIR/INDEX_FILEなど: %s\n  その他のGIT_*: %d件を除外\n  通常の設定探索: HOME・USERPROFILE・XDG_CONFIG_HOMEなどは継承（設定ファイルの読込結果は未確認）\n  コマンド内の固定設定: core.fsmonitor=false, core.untrackedCache=false, GIT_OPTIONAL_LOCKS=0, GIT_TERMINAL_PROMPT=0, LC_ALL=C, LANGUAGE=C\n  一時的な信頼設定: %s", diagnosticPath(c.executable), diagnosticPath(c.directory), present(c.commandConfig), present(c.configLocation), present(c.repository), c.other, trust)
 }
 
 func (e *gitError) Unwrap() error { return e.cause }
 
 func (e *gitError) Error() string {
+	causes := map[string]string{
+		"git_not_found":           "PATH上にGitの実行ファイルが見つかりません。",
+		"git_start_failed":        "Gitを起動できません。",
+		"git_ownership_rejected":  "Gitがリポジトリの所有権確認で拒否しました。",
+		"git_permission_denied":   "Gitがアクセス権限の不足で拒否しました。",
+		"git_not_repository":      "現在の場所はGitの作業ツリー内ではありません。",
+		"git_configuration_error": "Gitの設定を読み取れません。",
+		"git_failed":              "Gitが起動後に失敗しました。",
+	}
+	return fmt.Sprintf("失敗したGit操作: %s\n原因: %s\n次の対処: %s", e.operation, causes[e.code()], gitRetryAdvice(e.errorCategory()))
+}
+
+func (e *gitError) errorCategory() string {
+	if e.category != "" {
+		return e.category
+	}
+	return classifyGitError(e.cause, e.stderr)
+}
+
+func (e *gitError) code() string {
+	if errors.Is(e.cause, exec.ErrNotFound) {
+		return "git_not_found"
+	}
+	var exited *exec.ExitError
+	if !errors.As(e.cause, &exited) {
+		return "git_start_failed"
+	}
+	category, _, _ := strings.Cut(e.errorCategory(), "（")
+	switch category {
+	case "ownership":
+		return "git_ownership_rejected"
+	case "permission":
+		return "git_permission_denied"
+	case "not_repository":
+		return "git_not_repository"
+	case "configuration":
+		return "git_configuration_error"
+	default:
+		return "git_failed"
+	}
+}
+
+func (e *gitError) details() string {
 	startup, exit := "なし", "未取得（起動失敗）"
 	var processError *exec.ExitError
 	if errors.As(e.cause, &processError) {
@@ -94,11 +142,7 @@ func (e *gitError) Error() string {
 			}
 		}
 	}
-	category := e.category
-	if category == "" {
-		category = classifyGitError(e.cause, e.stderr)
-	}
-	return fmt.Sprintf("失敗したGit操作: %s\n  エラー分類: %s\n  起動エラー: %s\n  Gitの終了コード: %s\n  標準エラー（伏字済み）: %s\n  %s\n  再実行の案内: %s", e.operation, category, startup, exit, e.stderr, e.context.String(), gitRetryAdvice(category))
+	return fmt.Sprintf("失敗したGit操作: %s\n  エラー分類: %s\n  起動エラー: %s\n  Gitの終了コード: %s\n  標準エラー（伏字済み）: %s\n  %s", e.operation, e.errorCategory(), startup, exit, e.stderr, e.context.String())
 }
 
 func classifyGitError(err error, stderr string) string {
@@ -123,23 +167,44 @@ func classifyGitError(err error, stderr string) string {
 }
 
 func gitRetryAdvice(category string) string {
-	common := "直接実行時と同じ利用者・作業場所で、Gitの実行ファイルのパス識別子と設定の渡し方を確認してください。シェルの別名・関数や親のGIT_*設定は引き継ぎません。"
 	switch {
 	case strings.HasPrefix(category, "ownership"):
-		return common + " 所有者と内容を確認して信頼できる共有先だけ、同じ利用者で親のGIT_*をすべて除外した一時的な子環境から、& '<確認したGitの絶対パス>' config --global --add safe.directory '<確認したGitルートの絶対パス>' を明示的に実行し、元のworkscopeコマンドを再実行してください。GIT_CONFIG_GLOBALなどが残ると別の設定先へ保存されるため、利用ガイドの子環境の作成手順を参照してください。パスはプレースホルダーを置き換え、Gitルート1件だけを指定してください。権限昇格は自動で行いません。"
+		return "所有者と内容を確認し、信頼できるGitルートの絶対パスを --trust-repository <絶対パス> に指定して再実行してください（この実行だけに適用）。"
 	case strings.HasPrefix(category, "permission"):
-		return common + " 対象の読取権限とGitの実行権限を確認し、必要な対象だけを管理者へ相談してから元のコマンドを再実行してください。"
+		return "対象の読取権限とGitの実行権限を確認してから再実行してください。"
 	case strings.HasPrefix(category, "not_found"):
 		return "Gitの導入先とPATHを確認し、同じ利用者でGitを起動できる状態にしてから元のコマンドを再実行してください。"
 	case strings.HasPrefix(category, "not_repository"):
 		return "対象のGit作業ツリー内へ移動して、元のコマンドを再実行してください。"
 	default:
-		return common + " 分類と伏字済みの診断を確認し、原因を解消してから元のコマンドを再実行してください。"
+		return "--verbose を追加して詳細を確認し、原因を解消してから再実行してください。"
 	}
 }
 
 func failGit(code, message string, err error) error {
-	return fail(code, message+"\n  "+err.Error(), "")
+	var summaries, details []string
+	var collect func(error)
+	collect = func(current error) {
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				collect(child)
+			}
+			return
+		}
+		var diagnostic *gitError
+		if errors.As(current, &diagnostic) {
+			if len(summaries) == 0 || diagnostic.code() != "git_failed" {
+				code = diagnostic.code()
+			}
+			summaries = append(summaries, diagnostic.Error())
+			details = append(details, diagnostic.details())
+		}
+	}
+	collect(err)
+	if len(summaries) == 0 {
+		return fail(code, message+"\n  "+err.Error(), "")
+	}
+	return &failure{issue: Issue{Code: code, Message: message + "\n" + strings.Join(summaries, "\n"), Details: strings.Join(details, "\n")}}
 }
 
 func gitOperation(args []string) string {

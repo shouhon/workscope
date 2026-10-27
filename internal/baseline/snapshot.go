@@ -114,7 +114,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 		tracked[entry.Path] = true
 	}
 	for _, name := range s.Submodules {
-		s.Issues = append(s.Issues, Issue{"unsupported_submodule", "サブモジュールは判定対象外のため、完全な記録・照合はできません。", name})
+		s.Issues = append(s.Issues, Issue{Code: "unsupported_submodule", Message: "サブモジュールは判定対象外のため、完全な記録・照合はできません。", Path: name})
 	}
 	inSubmodule := func(name string) bool {
 		for _, module := range s.Submodules {
@@ -137,7 +137,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 	// 記録済みの対象の削除を確認する。無視対象へ変わった場合は本文を開かない。
 	for _, entry := range previous {
 		if ignoredPrevious[entry.Path] {
-			s.Issues = append(s.Issues, Issue{"coverage_changed", "開始時の対象が無視された未追跡パスへ変わったため、内容を照合しません。", entry.Path})
+			s.Issues = append(s.Issues, Issue{Code: "coverage_changed", Message: "開始時の対象が無視された未追跡パスへ変わったため、内容を照合しません。", Path: entry.Path})
 			continue
 		}
 		if !inSubmodule(entry.Path) {
@@ -186,9 +186,9 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 			info, err := r.fs.Lstat(name)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
-					s.Issues = append(s.Issues, Issue{"snapshot_changed", "列挙中に対象を確認できなくなりました。", name})
+					s.Issues = append(s.Issues, Issue{Code: "snapshot_changed", Message: "列挙中に対象を確認できなくなりました。", Path: name})
 				} else {
-					s.Issues = append(s.Issues, Issue{"unreadable_path", "対象を読み取れません。", name})
+					s.Issues = append(s.Issues, Issue{Code: "unreadable_path", Message: "対象を読み取れません。", Path: name})
 				}
 				continue
 			}
@@ -220,7 +220,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 				continue
 			}
 			if entry.Kind == "missing" {
-				s.Issues = append(s.Issues, Issue{"snapshot_changed", "列挙中に対象が削除されました。", name})
+				s.Issues = append(s.Issues, Issue{Code: "snapshot_changed", Message: "列挙中に対象が削除されました。", Path: name})
 				continue
 			}
 			entries[pathKey(name)] = entry

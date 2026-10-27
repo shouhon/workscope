@@ -21,7 +21,16 @@
 | 7. 対象・Git状態・開始記録を許可なく変更しない | `TestBeginRecordsContentIndexAndGitStateWithoutChangingInputs`、`TestBeginProtectsExistingRecordAndReplacesExplicitly`、`TestWindowsFailedReplacementPreservesBaseline`。受入スクリプトで通常・worktree両方の `begin`、`check`、ヘルプ、版表示、引数エラー、既存記録の拒否、明示した取り直し、破損記録の拒否について対象とGit状態を比較し、許可しない記録更新も検出する |
 | 8. 配列の安定順・JSON・終了コード | `TestCheckSeparatesPreexistingChangesAndReediting`、`TestCheckChangeKindsAndDirectoryBoundaries`、`internal/cli/run_test.go` のJSON・日本語・出力失敗テスト。受入スクリプトで同一状態の出力全体の一致、固定項目と配列、標準出力のJSONオブジェクト1件、標準エラー、終了コード0・1・2・64を確認する |
 | 追加要件9. タスク名ごとの開始記録 | `TestTaskRecordsCoexistAndSelectIndependentBaselines`、`TestTaskRecordsCanPrecedeDefaultRecord`、`TestTaskNamesRejectUnsafeAndAmbiguousArguments`、`TestTaskRecordsProtectMismatchedAndUnreadableState`、保存時の競合テスト、`TestWindowsFailedReplacementPreservesBaseline`、CLIのタスク引数・表示テスト。受入スクリプトで従来の記録と複数タスクの併存、開始時点・許容範囲、未記録名と上書きの拒否、選択した記録だけの取り直しを通常・worktreeの両方で確認する |
-| 追加要件10. Git診断・進捗・個別ヘルプ | `TestOwnershipDiagnosticExplainsDirectGitDifference` で、環境設定を渡した直接Gitの成功と、内部Gitの所有権エラー、診断の伏字、開始記録の保持、案内した登録方法での復旧を確認する。`TestGitContextRedactsPathsAndUnknownEnvironmentNames` と分類テストで秘密の除外と分類を確認する。`TestSlowGitReportsProgressSeparatelyFromJSON`、`TestProgressRemainsVisibleWhileFileReadWaits`、`TestProgressCountsEachSnapshotWithoutIgnoredOrStateFiles` でGit待ち・走査・件数・JSONとの分離を確認する。`TestSubcommandHelpDoesNotNeedGitOrWriteState` と受入スクリプトで個別ヘルプの非破壊性を確認する |
+| 追加要件10. Git診断・進捗・個別ヘルプ | `TestOwnershipDiagnosticExplainsDirectGitDifference` で、環境設定を渡した直接Gitの成功と、内部Gitの所有権拒否、伏字、開始記録の保持、一時信頼による復旧と指定省略時の再拒否を確認する。`TestTrustRepositorySupportsWorktreeAndLimitsExistingWildcard` と不正引数テストで、worktreeの限定、恒久設定の保持、広い信頼指定の除外、ルートの一致を確認する。`TestGitUnavailableOutputAndExitCodes` で未検出・起動失敗・起動後の権限拒否を機械コードで区別し、要約と詳細、単一JSON、終了コード2を確認する。既存の分類・伏字・進捗・個別ヘルプの検査を維持し、受入スクリプトで保存失敗2と通常・worktreeの非破壊性を実行ファイルでも確認する |
+
+## Gitの一時信頼と診断分離の確認結果（2026-10-27）
+
+- 基点は `b5ba91c200015277b182ce4bb517c7c0257d7333`。今回の製品コード・テスト・利用手順・受入スクリプトを加えた状態を確認した。引数の追加と診断コードの変更によりCLI版を `0.5.0` から `0.6.0` へ更新した。開始記録の形式と `schema_version: 1` は維持し、JSONの詳細は `--verbose` 時だけ省略可能な `issues[].details` に含める。
+- `checkstamp run --label git-trust-diagnostics --input cmd --input internal --input scripts --input go.mod --input .github --input AGENTS.md --input docs/requirements.md --input docs/usage.md --input docs/architecture.md --input README.md --json-summary -- pwsh -NoProfile -File ./scripts/verify.ps1` が成功した。実行IDは `0fc34792633af4aee48267d7410242e6`。採用直前の `checkstamp status` も `valid`、子の終了コード0、現在の変更件数0を確認した。この結果を記す受入・開発計画文書は検証入力に含めていない。
+- 整形、`go vet`、全Goテスト、Windowsビルド、ヘルプ・版表示、通常・worktreeの実行ファイルによる受入確認、Release判定テストが成功した。版表示は正本と同じ `workscope 0.6.0`。実行ファイルのSHA-256は `692488FAF4973CCC3E5B2F25C28AD4807888FDDB37527DD514F7CDE3461C4D4A`。
+- 着手時のソースも記録失敗は2を返していた。報告時に1になった起動経路は未確認であり、原因を断定していない。今回、通常・worktreeの開始記録を読取可能なまま置換できない状態にして、実行ファイルの `begin --replace` が通常表示・JSONとも2を返し、既存記録・インデックス・Git設定が不変であることを確認した。Git自体が1で失敗する場合も、CLIの回帰テストでは2を返す。
+- 所有者や権限は実際には変更せず、一時リポジトリと隔離したホームでGitの所有権拒否を再現した。親のGit設定を渡した直接実行は成功し、内部Gitは指定なしで拒否、`--trust-repository` 付きで復旧、再度指定を省略すると拒否した。通常のグローバル設定・別途指定した設定ファイル・リポジトリ設定・親の環境変数を変更していない。worktreeではそのルートだけを指定し、共通の管理領域を持つ別の作業ツリーの指定では拒否する。実際の共有先の所有者やUNCパスは未確認である。
+- 読み取り専用の補助担当が一時信頼の伝播と範囲、設定の非保存、診断の分類・表示、終了コードを独立確認し、修正が必要な問題は見つからなかった。実行結果と最終差分の確認は主担当が行った。外部依存、Git設定、公開のための変更は追加していない。
 
 ## Git診断・進捗・個別ヘルプの確認結果（2026-10-27）
 
