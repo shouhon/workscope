@@ -169,6 +169,106 @@ func TestBeginJSONAndReadOnlyCommands(t *testing.T) {
 	}
 }
 
+func TestEmptyStateDiagnosticsPreserveDirectory(t *testing.T) {
+	dir := t.TempDir()
+	fixtureGit := func(args ...string) {
+		t.Helper()
+		output, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("一時リポジトリの準備失敗: %v %s", err, output)
+		}
+	}
+	fixtureGit("init", "-q", "--template="+t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, "input.txt"), []byte("検証用の本文"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fixtureGit("add", "input.txt")
+	fixtureGit("-c", "user.name=workscope-test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath="+t.TempDir(), "commit", "-qm", "検証用")
+	state := filepath.Join(dir, ".workscope")
+	if err := os.Mkdir(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	protected := map[string][]byte{}
+	for _, name := range []string{"input.txt", ".git/index", ".git/HEAD", ".git/config"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		protected[name] = data
+	}
+	t.Chdir(dir)
+	for _, task := range []string{"", "repro"} {
+		for _, command := range []struct {
+			name string
+			args []string
+		}{
+			{"begin", []string{"begin", "--allow", "input.txt"}},
+			{"replace", []string{"begin", "--replace", "--allow", "input.txt"}},
+			{"check", []string{"check"}},
+		} {
+			for _, output := range []struct {
+				name string
+				args []string
+				json bool
+			}{
+				{"text", nil, false},
+				{"json", []string{"--json"}, true},
+				{"verbose", []string{"--verbose"}, false},
+				{"json_verbose", []string{"--json", "--verbose"}, true},
+			} {
+				t.Run(command.name+"/"+task+"/"+output.name, func(t *testing.T) {
+					args := append(append([]string{}, command.args...), output.args...)
+					if task != "" {
+						args = append(args, "--task", task)
+					}
+					var stdout, stderr bytes.Buffer
+					if code := cli.Run(args, &stdout, &stderr); code != 2 {
+						t.Fatalf("空の保存先の拒否が不正: %d %s / %s", code, &stdout, &stderr)
+					}
+					message := stdout.String()
+					if !output.json && command.args[0] == "begin" {
+						if stdout.Len() != 0 {
+							t.Fatalf("拒否したbeginの標準出力が空ではありません: %s", &stdout)
+						}
+						message = stderr.String()
+					} else if !validProgress(stderr.String()) {
+						t.Fatalf("標準エラーが不正です: %s", &stderr)
+					}
+					if output.json {
+						var result baseline.Result
+						decoder := json.NewDecoder(&stdout)
+						if err := decoder.Decode(&result); err != nil {
+							t.Fatal(err)
+						}
+						if err := decoder.Decode(new(any)); err != io.EOF {
+							t.Fatalf("JSONが1件ではありません: %v", err)
+						}
+						if result.Status != "unknown" || result.Command != command.args[0] || result.Task != task || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Code != "foreign_state" || result.Issues[0].Path != ".workscope" {
+							t.Fatalf("空の保存先のJSON契約が不正: %+v", result)
+						}
+						message = result.Issues[0].Message
+					}
+					for _, want := range []string{"既存の .workscope は空", "保存先は変更していません", "通常の空ディレクトリ", "別名へ退避", "次の編集前に begin", "空の状態保存先から復旧する"} {
+						if !strings.Contains(message, want) {
+							t.Fatalf("診断に %q がありません: %s", want, message)
+						}
+					}
+					children, err := os.ReadDir(state)
+					if err != nil || len(children) != 0 {
+						t.Fatalf("拒否した保存先が変化しました: %v %v", children, err)
+					}
+					for name, before := range protected {
+						after, err := os.ReadFile(filepath.Join(dir, name))
+						if err != nil || !bytes.Equal(before, after) {
+							t.Fatalf("対象ファイルかGit状態が変化しました: %s %v", name, err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestCheckJSONAndTextOutputContracts(t *testing.T) {
 	dir := t.TempDir()
 	if output, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {

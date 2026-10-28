@@ -153,6 +153,41 @@ try {
         Write-Fixture $directory '未追跡 空白.txt' '開始前の未追跡'
         Write-Fixture $directory 'ignored/hidden.txt' '照合しない本文'
         $before = Get-ProtectedState $directory $false
+        # 空の保存先を保護し、案内に従って退避した後だけ新しい開始点を作れることを確認する。
+        $statePath = Join-Path $directory '.workscope'
+        $null = [System.IO.Directory]::CreateDirectory($statePath)
+        foreach ($arguments in @(
+            @('begin', '--task', '復旧確認', '--allow', 'Src'),
+            @('begin', '--task', '復旧確認', '--replace', '--allow', 'Src'),
+            @('check', '--task', '復旧確認', '--trust-repository', $directory)
+        )) {
+            foreach ($verbose in @($false, $true)) {
+                $diagnosticArgs = if ($verbose) { $arguments + @('--verbose') } else { $arguments }
+                $unknown = Invoke-JSON $subdirectory $diagnosticArgs 2 'unknown'
+                Assert-Acceptance ($unknown.Data.issues.Count -eq 1 -and
+                    $unknown.Data.issues[0].code -ceq 'foreign_state' -and
+                    $unknown.Data.issues[0].path -ceq '.workscope' -and
+                    -not $unknown.Data.coverage.complete) "$mode の空の保存先の判定が不正です。"
+                $message = $unknown.Data.issues[0].message
+                foreach ($phrase in @('既存の .workscope は空', '保存先は変更していません', '通常の空ディレクトリ', '別名へ退避', '次の編集前に begin', '空の状態保存先から復旧する')) {
+                    Assert-Acceptance ($message.Contains($phrase)) "$mode の空の保存先の診断に $phrase がありません。"
+                }
+                $text = Invoke-Captured $executable $subdirectory $diagnosticArgs
+                Assert-Acceptance ($text.Code -eq 2) "$mode の空の保存先の通常表示で終了コードが不正です。"
+                if ($arguments[0] -eq 'begin') {
+                    Assert-Acceptance ($text.Text -eq '' -and $text.Error.Contains($message)) "$mode のbeginの診断がJSONと一致しません。"
+                } else {
+                    Assert-Acceptance ($text.Text.Contains($message) -and (Test-Progress $text.Error)) "$mode のcheckの診断がJSONと一致しません。"
+                }
+                Assert-Acceptance (@(Get-ChildItem -LiteralPath $statePath -Force -ErrorAction Stop).Count -eq 0) "$mode の拒否した空の保存先に書き込みました。"
+            }
+        }
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode の空の保存先の拒否で対象・Git状態が変化しました。"
+        $emptyState = Get-Item -LiteralPath $statePath -Force -ErrorAction Stop
+        Assert-Acceptance ($emptyState.PSIsContainer -and -not ($emptyState.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) '退避する保存先が通常のディレクトリではありません。'
+        $backup = Join-Path $directory '.workscope.empty-backup'
+        Assert-Acceptance (-not (Test-Path -LiteralPath $backup -ErrorAction Stop)) '退避先が既に存在します。'
+        Rename-Item -LiteralPath $emptyState.FullName -NewName '.workscope.empty-backup' -ErrorAction Stop
         $recorded = Invoke-JSON $subdirectory @('begin', '--allow', 'src\', '--allow', 'SRC', '--allow', '新規\配下', '--trust-repository', $directory) 0 'recorded'
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode のbeginが対象・Git状態を変更しました。"
         Assert-Acceptance ($recorded.Data.coverage.complete -and $recorded.Data.preexisting_changes.Count -eq 2) "$mode の開始前の変更または照合範囲が不正です。"
@@ -160,6 +195,8 @@ try {
         $unchanged = Invoke-JSON $subdirectory @('check') 0 'within_scope'
         Assert-Acceptance ($unchanged.Data.changes_since_begin.Count -eq 0 -and $unchanged.Data.index_changes.Count -eq 0) "$mode の開始前の変更を開始後の変更と扱いました。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の変更なしの照合が既存状態を変更しました。"
+        Assert-Acceptance ((Get-Item -LiteralPath $backup -Force -ErrorAction Stop).PSIsContainer -and
+            @(Get-ChildItem -LiteralPath $backup -Force -ErrorAction Stop).Count -eq 0) "$mode の退避した空の保存先が保持されていません。"
 
         $before = Get-ProtectedState $directory
         foreach ($argument in @('--help', '--version')) {

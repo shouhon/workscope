@@ -73,7 +73,7 @@ func (r *repository) readState(dir *os.Root, task string, locked, created bool) 
 	var selected []byte
 	records := 0
 	if len(children) == 0 {
-		return nil, fail("foreign_state", "workscopeの正常な開始記録を確認できません。", stateName)
+		return nil, fail("foreign_state", "既存の .workscope は空で、workscope用の開始記録を確認できません。保存先は変更していません。通常の空ディレクトリであることを確認して別名へ退避し、次の編集前に begin を実行してください。確認手順は利用ガイドの「空の状態保存先から復旧する」を参照してください。", stateName)
 	}
 	for _, child := range children {
 		name := child.Name()

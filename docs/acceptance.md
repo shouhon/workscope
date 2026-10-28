@@ -23,6 +23,16 @@
 | 追加要件9. タスク名ごとの開始記録 | `TestTaskRecordsCoexistAndSelectIndependentBaselines`、`TestTaskRecordsCanPrecedeDefaultRecord`、`TestTaskNamesRejectUnsafeAndAmbiguousArguments`、`TestTaskRecordsProtectMismatchedAndUnreadableState`、保存時の競合テスト、`TestWindowsFailedReplacementPreservesBaseline`、CLIのタスク引数・表示テスト。受入スクリプトで従来の記録と複数タスクの併存、開始時点・許容範囲、未記録名と上書きの拒否、選択した記録だけの取り直しを通常・worktreeの両方で確認する |
 | 追加要件10. Git診断・進捗・個別ヘルプ | `TestOwnershipDiagnosticExplainsDirectGitDifference` で、環境設定を渡した直接Gitの成功と、内部Gitの所有権拒否、伏字、開始記録の保持、一時信頼による復旧と指定省略時の再拒否を確認する。`TestTrustRepositorySupportsWorktreeAndLimitsExistingWildcard` と不正引数テストで、worktreeの限定、恒久設定の保持、広い信頼指定の除外、ルートの一致を確認する。`TestGitUnavailableOutputAndExitCodes` で未検出・起動失敗・起動後の権限拒否を機械コードで区別し、要約と詳細、単一JSON、終了コード2を確認する。既存の分類・伏字・進捗・個別ヘルプの検査を維持し、受入スクリプトで保存失敗2と通常・worktreeの非破壊性を実行ファイルでも確認する |
 
+## 空の状態保存先の診断・復旧の確認結果（2026-10-28）
+
+- 基点は `a7ec58a134ee4f572c621400ac6461b0d6bea4a2`。Issue #1に対応し、空と確認できた既存の `.workscope` に限って、原因と安全な復旧案内を表示する。診断の修正としてCLI版を `0.6.0` から `0.6.1` へ更新した。`unknown`・`foreign_state`・終了コード2、JSONオブジェクト1件、保存形式と既存の保存先保護は維持した。
+- `TestEmptyStateDiagnosticsPreserveDirectory` の再現条件は修正前に診断不足で失敗し、修正後は従来・タスク別の `begin`・`begin --replace`・`check` と通常・JSON・詳細表示の24通りが成功した。拒否の前後で空の保存先、対象ファイル、インデックス、HEAD、Git設定が変化しないことも確認した。
+- `scripts/acceptance.ps1` で、通常リポジトリとworktreeの両方を確認した。空の保存先を自動採用せず、`--replace` や `--trust-repository` でも拒否すること、表示とJSONの診断の一致、隠しファイルを含めた空の保持を確認した。通常ディレクトリと未使用の退避先を確認して別名へ退避した後は、`begin` が `recorded`・0、続く `check` が `within_scope`・0となる。退避したディレクトリと既存の対象・Git状態も保持した。
+- `checkstamp run --label issue-1-empty-state --input cmd --input internal --input scripts --input go.mod --input .github --input AGENTS.md --input docs/requirements.md --input docs/usage.md --input docs/architecture.md --input README.md --json-summary -- pwsh -NoProfile -File ./scripts/verify.ps1` が成功した。実行IDは `0e2871af1176282a850a7fa97eb2fe31`。採用直前の `checkstamp status` も `valid`、子の終了コード0、現在の変更件数0だった。この結果を記す文書は検証入力に含めていない。
+- 整形、`go vet`、全Goテスト、Windowsビルド、ヘルプ・版表示、通常・worktreeの実行ファイルによる受入確認、Release判定テストが成功した。版表示は正本と同じ `workscope 0.6.1`。実行ファイルのSHA-256は `A909E551A4B0953617027B956C6406EB331CAEB3CD2E7FFA094B177F5813D871`。
+- 読み取り専用の補助担当が診断の分岐・表示経路、保存先の保護、復旧手順と検査内容を独立確認し、重要な欠落は見つからなかった。実行検証と最終判断は主担当が行った。利用ガイドには空ではない保存先の別手順と、復旧後の記録から過去の開始点を再現できないことも記載した。
+- 環境上の未確認事項：通常のsandbox実行は、コマンドの起動前に `helper_unknown_error: setup refresh had errors` で失敗した。上記の検証は承認経路で実行したものであり、同じ復旧をsandbox内で実行できることは未確認である。実際の所有権・アクセス権限・Git設定を変更して対処していない。
+
 ## Gitの一時信頼と診断分離の確認結果（2026-10-27）
 
 - 基点は `b5ba91c200015277b182ce4bb517c7c0257d7333`。今回の製品コード・テスト・利用手順・受入スクリプトを加えた状態を確認した。引数の追加と診断コードの変更によりCLI版を `0.5.0` から `0.6.0` へ更新した。開始記録の形式と `schema_version: 1` は維持し、JSONの詳細は `--verbose` 時だけ省略可能な `issues[].details` に含める。
