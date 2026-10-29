@@ -85,6 +85,34 @@ function Invoke-JSON([string] $Directory, [string[]] $Arguments, [int] $Code, [s
     return @{ Data = $data; Text = $response.Text }
 }
 
+function Invoke-Summary([string] $Directory, [string[]] $Arguments, [int] $Code, [string] $Status) {
+    $response = Invoke-Captured $executable $Directory ($Arguments + @('--json-summary'))
+    Assert-Acceptance ($response.Code -eq $Code -and (Test-Progress $response.Error)) "要約の終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
+    $document = [System.Text.Json.JsonDocument]::Parse($response.Text)
+    try {
+        Assert-Acceptance ($document.RootElement.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) '要約がJSONオブジェクト1件ではありません。'
+    }
+    finally { $document.Dispose() }
+    $data = ConvertFrom-Json -InputObject $response.Text -AsHashtable
+    foreach ($field in @('schema_version', 'tool', 'command', 'status', 'baseline_id', 'root', 'coverage', 'counts', 'issues')) {
+        Assert-Acceptance ($data.ContainsKey($field)) "要約の固定項目 $field がありません。"
+    }
+    Assert-Acceptance ($data.schema_version -eq 1 -and $data.tool -ceq 'workscope' -and $data.command -ceq $Arguments[0] -and $data.status -ceq $Status) '要約の識別情報または状態が不正です。'
+    foreach ($field in @('preexisting_changes', 'changes_since_begin', 'index_changes', 'out_of_scope_changes')) {
+        Assert-Acceptance (-not $data.ContainsKey($field) -and $data.counts.ContainsKey($field)) "要約に明細があるか、件数 $field がありません。"
+    }
+    Assert-Acceptance ($data.issues -is [array] -and $data.counts.issues -eq $data.issues.Count) '要約の問題一覧・件数が不正です。'
+    if ($data.coverage.complete) {
+        Assert-Acceptance (-not $data.ContainsKey('observed_counts')) '完全な照合に下限の件数があります。'
+    } else {
+        Assert-Acceptance ($data.ContainsKey('observed_counts')) '不完全な照合に検出済みの件数がありません。'
+        foreach ($field in @('changes_since_begin', 'index_changes', 'out_of_scope_changes')) {
+            Assert-Acceptance ($null -eq $data.counts[$field]) "不完全な照合の総件数 $field がnullではありません。"
+        }
+    }
+    return @{ Data = $data; Text = $response.Text }
+}
+
 function Get-ProtectedState([string] $Directory, [bool] $IncludeBaseline = $true) {
     $paths = @('config.toml', '.gitignore', 'Src/変更 日本語.txt', 'Src/削除.txt', 'Src/追加 日本語.txt', 'Src2/別.txt', 'index-only.txt', '未追跡 空白.txt', '新規/配下/追加.txt', 'ignored/hidden.txt', '.git') |
         ForEach-Object { Join-Path $Directory $_ }
@@ -128,6 +156,9 @@ try {
         Assert-Acceptance ($verbose.Data.issues[0].details.Contains('Gitの終了コード: 128') -and
             $verbose.Data.issues[0].details.Contains('not a git repository') -and
             $verbose.Data.issues[0].details.Contains('パスSHA-256')) '指定したGit診断の詳細がありません。'
+        $summary = Invoke-Summary $outsideGit $arguments 2 'unknown'
+        Assert-Acceptance ($null -eq $summary.Data.counts.preexisting_changes -and
+            $summary.Data.issues[0].code -ceq 'git_not_repository') 'Git外の要約の件数・問題が不正です。'
     }
     Assert-Acceptance (-not (Test-Path -LiteralPath (Join-Path $outsideGit '.workscope'))) 'Git外で状態保存先を作成しました。'
     foreach ($mode in @('通常', 'worktree')) {
@@ -211,6 +242,9 @@ try {
         }
         $null = Invoke-JSON $subdirectory @('begin', '--allow', 'Src') 2 'unknown'
         $null = Invoke-JSON $subdirectory @('begin', '--allow', '../範囲外') 64 'invalid_arguments'
+        $null = Invoke-Summary $subdirectory @('begin', '--allow', 'Src') 2 'unknown'
+        $null = Invoke-Summary $subdirectory @('begin', '--allow', 'Src', '--json') 64 'invalid_arguments'
+        $null = Invoke-Summary $subdirectory @('check', '--replace') 64 'invalid_arguments'
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の表示・拒否したbeginが既存状態を変更しました。"
 
         # 記録の読取を許したまま置換を拒否し、保存失敗時の終了コードを直接確認する。
@@ -220,6 +254,9 @@ try {
         try {
             $failedSave = Invoke-JSON $subdirectory @('begin', '--replace', '--allow', 'Src') 2 'unknown'
             Assert-Acceptance ($failedSave.Data.issues[0].code -ceq 'save_failed') "$mode の保存失敗を再現できませんでした。"
+            $failedSummary = Invoke-Summary $subdirectory @('begin', '--replace', '--allow', 'Src') 2 'unknown'
+            Assert-Acceptance ($failedSummary.Data.issues[0].code -ceq 'save_failed' -and
+                $null -eq $failedSummary.Data.counts.preexisting_changes) "$mode の保存失敗の要約が不正です。"
             $failedText = Invoke-Captured $executable $subdirectory @('begin', '--replace', '--allow', 'Src')
             Assert-Acceptance ($failedText.Code -eq 2 -and $failedText.Text -eq '' -and
                 $failedText.Error.Contains('開始記録の置換に失敗')) "$mode の保存失敗時の通常表示または終了コードが不正です。"
@@ -238,6 +275,11 @@ try {
         $before = Get-ProtectedState $directory
         $within = Invoke-JSON $subdirectory @('check') 0 'within_scope'
         Assert-Acceptance ($within.Data.changes_since_begin.Count -eq 4 -and $within.Data.out_of_scope_changes.Count -eq 0) "$mode の範囲内の追加・変更・削除を判定できません。"
+        $withinSummary = Invoke-Summary $subdirectory @('check') 0 'within_scope'
+        Assert-Acceptance ($withinSummary.Data.counts.preexisting_changes -eq 2 -and
+            $withinSummary.Data.counts.changes_since_begin -eq 4 -and
+            $withinSummary.Data.counts.index_changes -eq 0 -and
+            $withinSummary.Data.counts.out_of_scope_changes -eq 0) "$mode の範囲内の要約件数が不正です。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の範囲内照合が既存状態を変更しました。"
 
         Write-Fixture $directory 'config.toml' '開始後の再編集'
@@ -251,6 +293,11 @@ try {
         $again = Invoke-JSON $subdirectory @('check') 1 'out_of_scope'
         Assert-Acceptance ($outside.Text -ceq $again.Text) "$mode の同一条件でJSONの並び順が変化しました。"
         Assert-Acceptance ($outside.Data.changes_since_begin.Count -eq 6 -and $outside.Data.index_changes.Count -eq 2 -and $outside.Data.out_of_scope_changes.Count -eq 4) "$mode の再編集・範囲外・インデックスの集計が不正です。"
+        $outsideSummary = Invoke-Summary $subdirectory @('check') 1 'out_of_scope'
+        Assert-Acceptance ($outsideSummary.Data.baseline_id -ceq $outside.Data.baseline_id -and
+            $outsideSummary.Data.counts.changes_since_begin -eq 6 -and
+            $outsideSummary.Data.counts.index_changes -eq 2 -and
+            $outsideSummary.Data.counts.out_of_scope_changes -eq 4) "$mode の範囲外の要約件数が不正です。"
         $expected = @('Src/追加 日本語.txt', 'Src/削除.txt', 'Src/変更 日本語.txt', '新規/配下/追加.txt')
         foreach ($change in $outside.Data.changes_since_begin) {
             Assert-Acceptance ($change.within_scope -eq ($expected -ccontains $change.path) -and -not $change.path.Contains('\')) "許容範囲またはパス区切りが不正です: $($change.path)"
@@ -263,6 +310,12 @@ try {
         $before = Get-ProtectedState $directory
         $unknown = Invoke-JSON $subdirectory @('check') 2 'unknown'
         Assert-Acceptance (-not $unknown.Data.coverage.complete -and 'head_changed' -cin $unknown.Data.issues.code -and $unknown.Data.out_of_scope_changes.Count -gt 0) "$mode の判定不能と範囲外の併記が不正です。"
+        $unknownSummary = Invoke-Summary $subdirectory @('check') 2 'unknown'
+        Assert-Acceptance ('head_changed' -cin $unknownSummary.Data.issues.code -and
+            $unknownSummary.Data.counts.preexisting_changes -eq 2 -and
+            $unknownSummary.Data.observed_counts.changes_since_begin -eq $unknown.Data.changes_since_begin.Count -and
+            $unknownSummary.Data.observed_counts.index_changes -eq $unknown.Data.index_changes.Count -and
+            $unknownSummary.Data.observed_counts.out_of_scope_changes -eq $unknown.Data.out_of_scope_changes.Count) "$mode の判定不能の要約で検出済みの件数が失われました。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の判定不能時に既存状態を変更しました。"
 
         $before = Get-ProtectedState $directory $false
@@ -274,8 +327,10 @@ try {
         $defaultPath = Join-Path $directory '.workscope/baseline.json'
         $defaultHash = (Get-FileHash -LiteralPath $defaultPath -Algorithm SHA256).Hash
         $before = Get-ProtectedState $directory $false
-        $taskA = Invoke-JSON $subdirectory @('begin', '--task', '日本語 作業A', '--allow', 'Src') 0 'recorded'
+        $taskA = Invoke-Summary $subdirectory @('begin', '--task', '日本語 作業A', '--allow', 'Src') 0 'recorded'
         Assert-Acceptance ($taskA.Data.task -ceq '日本語 作業A' -and $taskA.Data.baseline_id -cne $replacement.Data.baseline_id) "$mode のタスクの記録が不正です。"
+        Assert-Acceptance ($taskA.Data.counts.changes_since_begin -eq 0 -and
+            $taskA.Data.counts.index_changes -eq 0 -and $taskA.Data.counts.out_of_scope_changes -eq 0) "$mode の記録成功の要約件数が不正です。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode のタスク記録が対象・Git状態を変更しました。"
         Write-Fixture $directory 'config.toml' 'タスクA開始後の変更'
         $before = Get-ProtectedState $directory $false

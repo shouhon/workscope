@@ -18,7 +18,40 @@ workscope check --help
 
 整合性を確かめるために全体を2回取得します。ファイル数は各回で数え直し、正常に確認できたファイル・リンク・削除済みの対象を数えます。ディレクトリ自体や無視された未追跡ファイルは数えません。1つの大きなファイルの読取中は、確認が終わるまで件数が増えないことがあります。進捗の「処理終了」は成功を意味せず、最終結果と終了コードで判断してください。
 
-`--json` でも進捗は標準エラーへ出し、標準出力はJSONオブジェクト1件を保ちます。JSONをプログラムへ渡す場合は、標準エラーを標準出力へ結合しないでください。
+`--json`・`--json-summary` でも進捗は標準エラーへ出し、標準出力はJSONオブジェクト1件を保ちます。JSONをプログラムへ渡す場合は、標準エラーを標準出力へ結合しないでください。
+
+## 判定と件数だけをJSONで受け取る
+
+`begin`・`check` に `--json-summary` を付けると、変更パスの明細を省き、判定、開始記録の識別子、照合範囲・完全性、件数と問題を受け取れます。詳細なパスとハッシュが必要な場合は従来の `--json` を使います。両方の指定は引数の誤り（64）です。
+
+```powershell
+workscope begin --task '機能追加' --allow src --json-summary
+
+# 編集後、同じタスクの開始記録と照合する
+$text = workscope check --task '機能追加' --json-summary
+$code = $LASTEXITCODE
+$result = $text | ConvertFrom-Json
+$result.status
+$result.coverage.complete
+$result.counts
+# スクリプトの終了時は、加工前に保持した $code を使う
+```
+
+`counts` は次の項目を持ちます。完全に照合できた場合の0は、該当する変更がないことを示します。
+
+| 項目 | 件数の意味 |
+| --- | --- |
+| `preexisting_changes` | 開始記録にある開始前の変更 |
+| `changes_since_begin` | 開始後の作業ファイルの変化 |
+| `index_changes` | 開始後のステージ状態の変化 |
+| `out_of_scope_changes` | 範囲外の作業ファイルとステージ状態の変化の合計 |
+| `issues` | 出力した問題 |
+
+同じ範囲外のパスでも、作業ファイルとステージ状態の両方が変われば2件と数えます。`begin` が成功した直後は、開始前の変更件数を示し、開始後・ステージ・範囲外の件数は0です。`issues` は機械判定用の `code` と日本語の `message` を含み、関係する `path` も必要に応じて示します。`--verbose` 指定時だけ伏字済みの `details` を追加します。
+
+読み取り不能やHEAD変更などで `coverage.complete` が `false` になった場合、`counts` の開始後・ステージ・範囲外の総件数は `null` です。代わりに `observed_counts` の同名の3項目で、検出できた件数を下限として返します。例えば `counts.out_of_scope_changes: null` と `observed_counts.out_of_scope_changes: 1` は「範囲外を少なくとも1件検出したが、総件数は未確認」という意味です。下限が0でも、変更なしとは判断できません。
+
+開始記録を取得できなければ `counts.preexisting_changes` も `null` です。正常な開始記録を取得できていれば、現在の照合が不完全でも開始前の件数は返します。問題数は常に整数です。完全な照合では `observed_counts` を省略します。要約でも終了コードと既存記録の保護は同じで、`check` は記録を更新しません。
 
 ## 開始記録を作る
 

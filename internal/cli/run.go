@@ -19,9 +19,9 @@ const help = `workscope - 作業開始後の変更が許容範囲内か照合す
   workscope --version      版番号を表示する
   workscope begin --help / -h    開始記録の使い方を表示する
   workscope check --help / -h    照合の使い方を表示する
-  workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--json]
-  workscope begin --replace --allow <対象> [--allow <対象> ...] [--task <名前>] [--json]
-  workscope check [--json] [--task <名前>]
+  workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
+  workscope begin --replace --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
+  workscope check [--json | --json-summary] [--task <名前>]
   begin / check の共通指定: [--trust-repository <Gitルートの絶対パス>] [--verbose]
 
 記録する照合範囲:
@@ -47,6 +47,9 @@ check は開始記録を更新しない。ディレクトリと未作成の許�
 begin は記録成功で0、記録不能で2、引数の誤りで64を返す。1はcheckの範囲外検出だけに使う。
 Gitの失敗時は操作・原因・次の対処を表示する。--verbose で伏字済みの詳細を表示する。
 --json --verbose では issues[].details に詳細を含める。通常はこの項目を省略する。
+--json-summary は変更の明細を省き、判定・照合範囲・件数・問題をJSONで返す。
+完全に照合できない総件数はnull、確認できた変更件数は observed_counts に下限として示す。
+--json と --json-summary は併用できない。
 --trust-repository は確認して信頼したGitルート1件だけに、この実行中の信頼設定を渡す。
 絶対パスを指定し、begin と check のそれぞれで指定する。恒久的なGit設定は変更しない。
 長い処理では段階・確認済みファイル数・経過時間を約1秒ごとに標準エラーへ表示する。
@@ -56,7 +59,7 @@ Gitの失敗時は操作・原因・次の対処を表示する。--verbose で�
 const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を記録する
 
 使い方:
-  workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--replace] [--json]
+  workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--replace] [--json | --json-summary]
                   [--trust-repository <Gitルートの絶対パス>] [--verbose]
   workscope begin --help / -h
 
@@ -66,6 +69,7 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
   --task <名前>   任意。タスク別の開始記録を使う。checkでも同じ名前を指定する。
   --replace       選んだ開始記録を明示的に取り直す。他の記録は変更しない。
   --json          結果を標準出力へJSONオブジェクト1件で返す。
+  --json-summary  変更の明細を省き、判定・件数・問題をJSONで返す。--json と併用不可。
   --trust-repository <絶対パス>  信頼するGitルート1件を、この実行だけGitへ渡す。
                    所有者と内容を事前に確認する。恒久設定や開始記録には保存しない。
   --verbose       Git診断の詳細を表示する。--json では issues[].details に含める。
@@ -73,6 +77,7 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
 使用例:
   workscope begin --allow src --allow AGENTS.md
   workscope begin --task '文書修正' --allow docs --json
+  workscope begin --task '機能追加' --allow src --json-summary
   workscope begin --task '文書修正' --replace --allow docs
   workscope begin --allow src --trust-repository 'D:\作業\対象プロジェクト'
 
@@ -81,19 +86,21 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
 Git管理領域、.workscope/、無視された未追跡ファイル、リンク先の内容は走査しない。
 状態保存先の除外は、利用者が .gitignore に /.workscope/ を追加する。
 長い処理の進捗は標準エラーへ表示し、JSONには混ぜない。
+要約の未確認の総件数はnullとし、確認できた変更件数は observed_counts に下限として示す。
 終了コード: 0=記録成功、2=記録不能、64=引数の誤り。
 `
 
 const checkHelp = `workscope check - 開始記録と現在の状態を照合する
 
 使い方:
-  workscope check [--task <名前>] [--json] [--trust-repository <Gitルートの絶対パス>] [--verbose]
+  workscope check [--task <名前>] [--json | --json-summary] [--trust-repository <Gitルートの絶対パス>] [--verbose]
   workscope check --help / -h
 
 引数:
   必須の引数はない。事前に begin --allow <対象> で開始記録を作る。
   --task <名前>  beginと同じ名前の記録を選ぶ。省略時は従来の記録を使う。
   --json         結果を標準出力へJSONオブジェクト1件で返す。
+  --json-summary  変更の明細を省き、判定・件数・問題をJSONで返す。--json と併用不可。
   --trust-repository <絶対パス>  信頼するGitルート1件を、この実行だけGitへ渡す。
                   begin の指定は保存されないため、check でも指定する。
   --verbose      Git診断の詳細を表示する。--json では issues[].details に含める。
@@ -101,11 +108,13 @@ const checkHelp = `workscope check - 開始記録と現在の状態を照合す�
 使用例:
   workscope check
   workscope check --task '文書修正' --json
+  workscope check --task '機能追加' --json-summary
   workscope check --trust-repository 'D:\作業\対象プロジェクト' --verbose
 
 開始前からある変更と開始後の変化、インデックスの変化を分けて表示する。
 開始記録・対象ファイル・Git設定を更新しない。--allow と --replace は指定できない。
 長い処理の進捗は標準エラーへ表示し、JSONには混ぜない。
+要約の未確認の総件数はnullとし、確認できた変更件数は observed_counts に下限として示す。
 終了コード: 0=範囲外の変更なし、1=範囲外の変更あり、2=判定不能、64=引数の誤り。
 `
 
@@ -133,10 +142,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 func runCheck(args []string, stdout, stderr io.Writer) int {
 	result := baseline.NewResult()
 	result.Command = "check"
-	jsonOutput := false
+	jsonOutput, jsonSummary := false, false
 	for _, arg := range args {
 		if arg == "--json" {
 			jsonOutput = true
+		}
+		if arg == "--json-summary" {
+			jsonSummary = true
 		}
 	}
 	task, taskSet := "", false
@@ -146,7 +158,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		switch arg := args[i]; {
 		case arg == "--help", arg == "-h":
 			return writeOutput(stdout, stderr, checkHelp)
-		case arg == "--json":
+		case arg == "--json", arg == "--json-summary":
 		case arg == "--verbose":
 			verbose = true
 		case arg == "--trust-repository", strings.HasPrefix(arg, "--trust-repository="):
@@ -194,6 +206,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 	}
+	if argumentError == "" && jsonOutput && jsonSummary {
+		argumentError = "--json と --json-summary は併用できません。"
+	}
 	result.Task = task
 	code := 2
 	if argumentError != "" {
@@ -211,8 +226,12 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		result.Coverage.Complete = false
 	}
 	selectDiagnostics(&result, verbose)
-	if jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+	if jsonOutput || jsonSummary {
+		var output any = result
+		if jsonSummary {
+			output = summarize(result)
+		}
+		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			fmt.Fprintln(stderr, "標準出力への書き込みに失敗しました。")
 			return 2
 		}
@@ -275,10 +294,13 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 }
 
 func runBegin(args []string, stdout, stderr io.Writer) int {
-	jsonOutput := false
+	jsonOutput, jsonSummary := false, false
 	for _, arg := range args {
 		if arg == "--json" {
 			jsonOutput = true
+		}
+		if arg == "--json-summary" {
+			jsonSummary = true
 		}
 	}
 	allow := []string{}
@@ -290,7 +312,7 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 		switch arg := args[i]; {
 		case arg == "--help", arg == "-h":
 			return writeOutput(stdout, stderr, beginHelp)
-		case arg == "--json":
+		case arg == "--json", arg == "--json-summary":
 		case arg == "--verbose":
 			verbose = true
 		case arg == "--trust-repository", strings.HasPrefix(arg, "--trust-repository="):
@@ -349,6 +371,9 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 	}
+	if argumentError == "" && jsonOutput && jsonSummary {
+		argumentError = "--json と --json-summary は併用できません。"
+	}
 	result := baseline.NewResult()
 	result.Task = task
 	code := 64
@@ -369,8 +394,12 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	selectDiagnostics(&result, verbose)
-	if jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+	if jsonOutput || jsonSummary {
+		var output any = result
+		if jsonSummary {
+			output = summarize(result)
+		}
+		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			fmt.Fprintln(stderr, "標準出力への書き込みに失敗しました。")
 			return 2
 		}

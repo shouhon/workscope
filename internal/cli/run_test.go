@@ -24,7 +24,7 @@ func TestHelp(t *testing.T) {
 			if code := cli.Run([]string{arg}, &stdout, &stderr); code != 0 {
 				t.Fatalf("終了コード = %d、期待値 = 0", code)
 			}
-			for _, text := range []string{"使い方", "workscope check [--json]", "--task <名前>", "サブモジュール", "/.workscope/", "1=範囲外の変更あり"} {
+			for _, text := range []string{"使い方", "workscope check [--json | --json-summary]", "--task <名前>", "サブモジュール", "/.workscope/", "1=範囲外の変更あり"} {
 				if !strings.Contains(stdout.String(), text) {
 					t.Errorf("ヘルプに %q がありません", text)
 				}
@@ -41,13 +41,13 @@ func TestSubcommandHelpDoesNotNeedGitOrWriteState(t *testing.T) {
 	t.Chdir(dir)
 	t.Setenv("PATH", t.TempDir())
 	for _, command := range []string{"begin", "check"} {
-		for _, flags := range [][]string{{"--help"}, {"-h"}, {"--json", "--help"}} {
+		for _, flags := range [][]string{{"--help"}, {"-h"}, {"--json", "--help"}, {"--json-summary", "--help"}} {
 			args := append([]string{command}, flags...)
 			var stdout, stderr bytes.Buffer
 			if code := cli.Run(args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
 				t.Fatalf("%v のヘルプ表示失敗: %d %s", args, code, &stderr)
 			}
-			for _, want := range []string{"使い方:", "引数:", "使用例:", "--task <名前>", "終了コード:"} {
+			for _, want := range []string{"使い方:", "引数:", "使用例:", "--task <名前>", "--json-summary", "終了コード:"} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Errorf("%v のヘルプに %q がありません", args, want)
 				}
