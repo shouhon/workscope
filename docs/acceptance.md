@@ -2,6 +2,17 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## 信頼先の確認段階と原因の診断（2026-10-31）
+
+[Issue #3](https://github.com/shouhon/workscope/issues/3)に対応し、信頼先の形式不正・不存在・ディレクトリ以外・Gitルートとの不一致を別々の診断コードと64で返し、確認不能は `trust_repository_unreadable`・2へ分けた。機械判定用コードと終了コードの分類変更によりCLI版を `0.7.0` から `0.8.0` へ更新し、保存・JSON形式は `schema_version: 1` を維持した。
+
+- `TestTrustRepositoryDiagnosticsAndOutputModesPreserveState` は `begin`・`check` の通常表示・詳細JSON・要約JSONで、4種類の拒否、`--verbose` による詳細の有無、確認段階、パスの非表示、既存記録・対象・Git設定の保持を確認する。従来の不正引数、所有権拒否からの復旧、worktree限定、広い信頼設定の除外の検査も維持した。
+- `TestTrustRepositoryReferenceFailuresAreSafeAndClassified` は、ラップしたアクセス拒否・不存在・未知のOSエラーを使い、段階別の原因区分、64と2の区別、パス識別子、生のパス・OSエラー本文の非表示を確認する。実際のアクセス権限は変更していない。`TestTrustRepositoryDisappearanceIsUnknown` は一時的な信頼先を最初の確認後に消し、`begin --replace`・`check` がともに2で停止して既存記録を保持することを確認する。
+- `TestTrustRepositoryIdentityDoesNotReopenPath` は、ハンドルから取得済みの実体情報を、対象が消えた後も追加参照なしで比較できることを確認する。`TestTrustRepositoryIdentityWithOpenDirectory` は別の読取ハンドルを保持した正常系を確認する。保持ハンドルによる共有違反はこの環境では再現せず、元のサンドボックス環境の失敗APIも未特定である。
+- 読み取り専用の独立確認で、Windowsの `os.SameFile` が内部のファイルID取得失敗も不一致として返す点を指摘された。主担当が導入済みGoのソースで確認し、開く処理とハンドルの `Stat()` の失敗を観測して2へ分ける修正を行った。修正後の独立確認では重大な残件はなかった。外部依存は追加していない。
+- `scripts/acceptance.ps1` は通常リポジトリとworktreeの両方で4分類の64と詳細表示を確認し、正しいルートを指定した未記録タスクの `check` が `baseline_missing`・2まで進むことを確認した。拒否した実行は対象・インデックス・HEAD・Git設定・保存先を変更していない。
+- 検証対象は開始コミット `829eae716307dc989394e2099d3d519a5cf7d728` に今回の差分を加えたソース。`cmd`・`internal`・`scripts`・`go.mod`・`.github`・`AGENTS.md`・要件・利用手順・構成文書を入力とした `checkstamp` の実行ID `d6fa885377b040175bc3d91e1c035c61` で `./scripts/verify.ps1` が成功し、結果採用直前の `status` も `valid`・終了コード0だった。この受入文書と開発計画は入力に含めていない。実行ファイルの版表示が正本と一致し、SHA-256は `E711A560090D7C90C9008AB21F26845EA9D5BDB99ED9AFCB18D632065B0D9BC3` だった。
+
 ## 要約JSON出力の確認結果（2026-10-29）
 
 [Issue #2](https://github.com/shouhon/workscope/issues/2)の追加要件を、CLIテストと実行ファイルの受入確認で検証した。

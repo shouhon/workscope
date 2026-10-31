@@ -184,6 +184,37 @@ try {
         Write-Fixture $directory '未追跡 空白.txt' '開始前の未追跡'
         Write-Fixture $directory 'ignored/hidden.txt' '照合しない本文'
         $before = Get-ProtectedState $directory $false
+        # 信頼先の誤りを分離し、記録・Git状態を変更しないことを実行ファイルで確認する。
+        foreach ($case in @(
+            @{ Trust = 'relative'; Code = 'invalid_trust_repository'; Stage = '引数の形式確認' },
+            @{ Trust = (Join-Path $directory '存在しない信頼先'); Code = 'trust_repository_not_found'; Stage = '指定先の実体解決' },
+            @{ Trust = (Join-Path $directory 'config.toml'); Code = 'trust_repository_not_directory'; Stage = '指定先の種類確認' },
+            @{ Trust = $subdirectory; Code = 'trust_repository_mismatch'; Stage = 'Gitルートとの実体照合' }
+        )) {
+            foreach ($command in @('begin', 'check')) {
+                $arguments = @($command, '--trust-repository', $case.Trust)
+                if ($command -eq 'begin') { $arguments += @('--allow', 'Src', '--replace') }
+                $diagnostic = Invoke-JSON $subdirectory $arguments 64 'invalid_arguments'
+                Assert-Acceptance ($diagnostic.Data.issues.Count -eq 1 -and
+                    $diagnostic.Data.issues[0].code -ceq $case.Code -and
+                    -not $diagnostic.Data.issues[0].ContainsKey('details')) "$mode の信頼先の通常診断が不正です。"
+                $detail = Invoke-Summary $subdirectory ($arguments + @('--verbose')) 64 'invalid_arguments'
+                Assert-Acceptance ($detail.Data.issues[0].code -ceq $case.Code -and
+                    $detail.Data.issues[0].details.Contains($case.Stage) -and
+                    $detail.Data.issues[0].details.Contains('原因区分:') -and
+                    -not $detail.Text.Contains($directory) -and
+                    -not $detail.Text.Contains($directory.Replace('\', '/'))) "$mode の信頼先の詳細・伏字が不正です。"
+                $text = Invoke-Captured $executable $subdirectory ($arguments + @('--verbose'))
+                Assert-Acceptance ($text.Code -eq 64 -and $text.Text -eq '' -and
+                    $text.Error.Contains($diagnostic.Data.issues[0].message) -and
+                    $text.Error.Contains($case.Stage)) "$mode の信頼先の通常表示とJSONが一致しません。"
+            }
+        }
+        $acceptedTrust = Invoke-Summary $subdirectory @('check', '--task', '信頼先確認用の未記録名', '--trust-repository', $directory, '--verbose') 2 'unknown'
+        Assert-Acceptance ($acceptedTrust.Data.issues[0].code -ceq 'baseline_missing' -and
+            $acceptedTrust.Data.root -ne '') "$mode の正しい信頼先が受理されませんでした。"
+        Assert-Acceptance (-not (Test-Path -LiteralPath (Join-Path $directory '.workscope')) -and
+            $before -ceq (Get-ProtectedState $directory $false)) "$mode の信頼先診断が状態を変更しました。"
         # 空の保存先を保護し、案内に従って退避した後だけ新しい開始点を作れることを確認する。
         $statePath = Join-Path $directory '.workscope'
         $null = [System.IO.Directory]::CreateDirectory($statePath)

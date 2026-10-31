@@ -2,4 +2,4 @@
 package version
 
 // Current は版番号の唯一の正本であり、実行ファイルの --version に使う。
-const Current = "0.7.0"
+const Current = "0.8.0"

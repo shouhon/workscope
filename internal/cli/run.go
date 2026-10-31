@@ -240,6 +240,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	if code == 64 {
 		for _, issue := range result.Issues {
 			fmt.Fprintln(stderr, issue.Message)
+			if issue.Details != "" {
+				fmt.Fprintln(stderr, "詳細:\n"+issue.Details)
+			}
 		}
 		return code
 	}

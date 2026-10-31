@@ -167,6 +167,18 @@ workscope check --trust-repository 'D:\作業\対象プロジェクト'
 
 この指定は、その実行の子Gitすべてに `-c safe.directory= -c safe.directory=<指定ルート>` として渡します。既存の全件信頼設定もその実行では指定した1件へ絞り、グローバル設定やリポジトリの設定ファイルは変更しません。開始記録にも保存しないため、次の実行でも指定が必要です。空・複数指定・相対パス・ワイルドカード・制御文字・存在しないパスは拒否し、Gitが返すルートと指定したパスの実体も照合します。`--trust-repository=絶対パス` でも指定できます。[Gitの safe.directory の仕様](https://git-scm.com/docs/git-config#Documentation/git-config.txt-safedirectory)に従います。
 
+信頼先の確認に失敗した場合は、次の診断で対処を選べます。空・複数指定・値の欠落は従来どおり `invalid_arguments`・64です。
+
+| code | 状態・終了コード | 原因と対処 |
+| --- | --- | --- |
+| `invalid_trust_repository` | `invalid_arguments`・64 | 形式不正。Gitルート1件の絶対パスを指定し、ワイルドカードや制御文字を除く |
+| `trust_repository_not_found` | `invalid_arguments`・64 | 最初の実体解決・参照で不存在を確認。指定先やリンク先の存在を確認する |
+| `trust_repository_not_directory` | `invalid_arguments`・64 | ディレクトリ以外。Gitルートのディレクトリを指定する |
+| `trust_repository_mismatch` | `invalid_arguments`・64 | 指定先とGitルートの実体が不一致。現在の作業ツリーのルートを指定する |
+| `trust_repository_unreadable` | `unknown`・2 | アクセス拒否などで確認不能。指定先・親の読取・参照権限、実行環境の制限、確認中の消失を調べる |
+
+`--verbose` を付けると、通常表示および両JSONの `issues[].details` に、実体解決・参照・種類確認・ルート照合などの失敗した段階と原因区分を表示します。アクセス拒否と不存在だけを安全に分類し、その他の参照エラーの原因は「未確認」とします。パスはSHA-256の識別子で示し、生の絶対パスやOSエラー本文は追加しません。初回確認後に参照先が消えた場合も、引数誤りとして断定せず2で停止します。拒否時は開始記録やGit設定を変更せず、別ルートや全リポジトリの信頼へ切り替えません。Git自体が所有権などで失敗した場合は、上表ではなく既存の `git_*` 診断を返します。
+
 詳細を調べる場合は、同じコマンドに `--verbose` を追加します。`begin` の詳細指定も実際の記録操作なので、診断だけのために `--replace` を追加しないでください。
 
 ```powershell

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -81,26 +80,15 @@ func openRepository(dir string, observers ...*progress) (*repository, error) {
 	return openRepositoryWithOptions(dir, Options{}, observers...)
 }
 
-func invalidTrustRepository() error {
-	return &failure{invalid: true, issue: Issue{Code: "invalid_trust_repository", Message: "--trust-repository は対象のGitルート1件の絶対パスを指定してください。ワイルドカードは使えません。"}}
-}
-
 func openRepositoryWithOptions(dir string, options Options, observers ...*progress) (*repository, error) {
 	var progress *progress
 	if len(observers) != 0 {
 		progress = observers[0]
 	}
 	if name := options.TrustRepository; name != "" {
-		if !utf8.ValidString(name) || !filepath.IsAbs(name) || strings.ContainsAny(name, "*?[") || strings.ContainsFunc(name, unicode.IsControl) {
-			return nil, invalidTrustRepository()
-		}
-		trusted, err := filepath.EvalSymlinks(filepath.Clean(name))
+		trusted, err := resolveTrustRepository(name)
 		if err != nil {
-			return nil, invalidTrustRepository()
-		}
-		info, err := os.Stat(trusted)
-		if err != nil || !info.IsDir() {
-			return nil, invalidTrustRepository()
+			return nil, err
 		}
 		options.TrustRepository = trusted
 	}
@@ -108,8 +96,12 @@ func openRepositoryWithOptions(dir string, options Options, observers ...*progre
 	if err != nil {
 		return nil, failGit("git_failed", "Gitの作業ディレクトリを特定できません。", err)
 	}
+	gitRoot := root
 	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
+		if options.TrustRepository != "" {
+			return nil, unreadableTrustRepository("Gitルートの実体解決", gitRoot, err, false)
+		}
 		return nil, fail("root_unreadable", "Gitルートの実体を確認できません。", "")
 	}
 	root, err = filepath.Abs(root)
@@ -117,14 +109,23 @@ func openRepositoryWithOptions(dir string, options Options, observers ...*progre
 		return nil, err
 	}
 	if options.TrustRepository != "" {
-		trusted, trustErr := os.Stat(options.TrustRepository)
-		actual, rootErr := os.Stat(root)
-		if trustErr != nil || rootErr != nil || !os.SameFile(trusted, actual) {
-			return nil, invalidTrustRepository()
+		trusted, trustErr := trustRepositoryIdentity(options.TrustRepository, "指定先")
+		if trustErr != nil {
+			return nil, trustErr
+		}
+		actual, rootErr := trustRepositoryIdentity(root, "Gitルート")
+		if rootErr != nil {
+			return nil, rootErr
+		}
+		if !os.SameFile(trusted, actual) {
+			return nil, &failure{invalid: true, issue: trustRepositoryIssue("trust_repository_mismatch", "--trust-repository の指定先と現在のGitルートの実体が一致しません。対象の作業ツリーのルートを指定してください。", "Gitルートとの実体照合", "実体の不一致", options.TrustRepository)}
 		}
 	}
 	fs, err := os.OpenRoot(root)
 	if err != nil {
+		if options.TrustRepository != "" {
+			return nil, unreadableTrustRepository("Gitルートを開く", root, err, false)
+		}
 		return nil, fail("root_unreadable", "Gitルートを開けません。", "")
 	}
 	r := &repository{root: root, fs: fs, excluded: []string{".workscope"}, progress: progress, options: options}
