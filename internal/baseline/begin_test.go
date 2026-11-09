@@ -160,7 +160,7 @@ func TestBeginProtectsExistingRecordAndReplacesExplicitly(t *testing.T) {
 }
 
 func TestBeginRejectsForeignStateEvenWithReplace(t *testing.T) {
-	for _, kind := range []string{"empty", "foreign", "unsupported", "broken", "extra", "other_root"} {
+	for _, kind := range []string{"foreign", "unsupported", "broken", "extra", "other_root"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := repo(t)
 			if err := os.Mkdir(filepath.Join(dir, stateName), 0700); err != nil {

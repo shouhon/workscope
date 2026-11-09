@@ -75,33 +75,9 @@ workscope begin --replace --allow AGENTS.md --allow src
 
 ## 空の状態保存先から復旧する
 
-既存の `.workscope` が空の場合、`begin` と `check` は「既存の .workscope は空」と表示し、`unknown`・`foreign_state`・終了コード2で停止します。JSONの `issues[].message` と `--verbose` でも同じ原因と復旧案内を確認できます。空の保存先を自動で採用・削除・修復することはありません。
+既存の `.workscope` が通常の空ディレクトリなら、`begin` がそのまま最初の開始記録を保存します。追加の指定、利用者の確認、手作業の退避は不要です。未作成の場合も従来どおり作成します。
 
-この手順は、Gitルート直下の `.workscope` が、リンクやジャンクションではない通常の空ディレクトリである場合だけ使います。他のworkscopeや保存先を変更する処理が動いていないことを確認してから、PowerShellで次を実行します。読み取りに失敗した場合は空と判断せず、操作を中止してください。
-
-```powershell
-$gitRoot = & git --no-optional-locks rev-parse --show-toplevel
-if ($LASTEXITCODE -ne 0) { throw 'Gitルートを確認できません。' }
-if ((Get-Location).ProviderPath -ne (Resolve-Path -LiteralPath $gitRoot -ErrorAction Stop).ProviderPath) {
-    throw '対象のGitルートへ移動してから確認してください。'
-}
-$state = Get-Item -LiteralPath .workscope -Force -ErrorAction Stop
-if (-not $state.PSIsContainer -or ($state.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-    throw '.workscope が通常のディレクトリではありません。'
-}
-if (@(Get-ChildItem -LiteralPath $state.FullName -Force -ErrorAction Stop).Count -ne 0) {
-    throw '.workscope は空ではありません。既存の内容を確認してください。'
-}
-$backup = Join-Path $gitRoot '.workscope.empty-backup'
-if (Test-Path -LiteralPath $backup -ErrorAction Stop) {
-    throw '退避先が既に存在します。未使用の名前を選び、再確認してください。'
-}
-Rename-Item -LiteralPath $state.FullName -NewName '.workscope.empty-backup' -ErrorAction Stop
-```
-
-隠しファイルを含めて空であることと、退避先が未使用であることを確認してから、元のディレクトリを残したまま別名へ退避します。確認中に保存先が変化した場合も、操作を中止してください。
-
-退避後、**次の編集前に**今回の許容範囲で `begin` を実行し、続けて `check` で確認します。次は `src` を許容する例です。タスク名を使う場合は、両方に同じ `--task <名前>` を付けてください。
+**次の編集前に**今回の許容範囲で `begin` を実行し、成功を確認してから編集してください。次は `src` を許容する例です。タスク名を使う場合は、両方に同じ `--task <名前>` を付けます。
 
 ```powershell
 workscope begin --allow src --json
@@ -109,11 +85,15 @@ if ($LASTEXITCODE -ne 0) { throw '開始記録を作成できませんでした�
 workscope check --json
 ```
 
-復旧後の記録は、その `begin` を実行した時点が開始点です。それ以前の編集を開始後の変更として検証する記録を、後付けで再現することはできません。`--replace` は空・破損・別用途の保存先に対する保護を解除しません。`--trust-repository` はGitの所有権確認に対処する指定であり、空の保存先の解消には使えません。
+CLIが隠し項目を含めて空であることを読み取り、開始時と保存直前のディレクトリの実体を確認します。リンク・ジャンクション、読取不能、別用途の内容、破損・未知形式の記録がある場合は利用せず停止します。確認中の差し替えや並行書き込みを検出した場合も、既存の内容を保護して終了コード2を返します。
+
+`check` と `list` は空の保存先を初期化せず、`unknown`・`foreign_state`・終了コード2で停止します。診断には、次の編集前に `begin --allow <対象>` を実行する案内を表示します。拒否されたことだけを理由に保存先を削除したり、照合済みとして編集を続けたりしないでください。
+
+開始点は、その `begin` を実行した時点です。それ以前の編集を開始後の変更として検証する記録を、後付けで再現することはできません。空の保存先に `--replace` は不要です。同指定は選んだ正常な記録を取り直すためのもので、破損・別用途の保存先に対する保護は解除しません。`--trust-repository` はGitの所有権確認に対処する指定です。
 
 ### 空ではない・読み取れない保存先の場合
 
-上の空ディレクトリ用の退避手順を使わず、`check --json` の `issues[].code` と `issues[].path` から問題の対象を確認してください。`baseline.json` や `task-*.json` がある場合は、既存の内容を保護し、JSONとして読み取れるか、`tool`・`schema_version`・`root`・`task` がそのリポジトリ・タスクの記録と一致するかを確認します。未知の形式や破損した記録を手作業で正常扱いに変更しないでください。
+空と推測して初期化せず、`check --json` の `issues[].code` と `issues[].path` から問題の対象を確認してください。`baseline.json` や `task-*.json` がある場合は、既存の内容を保護し、JSONとして読み取れるか、`tool`・`schema_version`・`root`・`task` がそのリポジトリ・タスクの記録と一致するかを確認します。未知の形式や破損した記録を手作業で正常扱いに変更しないでください。
 
 `record.lock` や一時ファイルが残っている場合は、他の記録処理が実行中でないかを先に確認します。別用途の内容、リンク・ジャンクション、読取権限の不足も、それぞれの原因を確認する必要があります。これらを空と推測して退避したり、削除したりしないでください。
 

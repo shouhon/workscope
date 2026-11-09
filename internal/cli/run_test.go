@@ -169,7 +169,7 @@ func TestBeginJSONAndReadOnlyCommands(t *testing.T) {
 	}
 }
 
-func TestEmptyStateDiagnosticsPreserveDirectory(t *testing.T) {
+func TestEmptyStateCheckDiagnosticsPreserveDirectory(t *testing.T) {
 	dir := t.TempDir()
 	fixtureGit := func(args ...string) {
 		t.Helper()
@@ -202,8 +202,6 @@ func TestEmptyStateDiagnosticsPreserveDirectory(t *testing.T) {
 			name string
 			args []string
 		}{
-			{"begin", []string{"begin", "--allow", "input.txt"}},
-			{"replace", []string{"begin", "--replace", "--allow", "input.txt"}},
 			{"check", []string{"check"}},
 		} {
 			for _, output := range []struct {
@@ -215,6 +213,7 @@ func TestEmptyStateDiagnosticsPreserveDirectory(t *testing.T) {
 				{"json", []string{"--json"}, true},
 				{"verbose", []string{"--verbose"}, false},
 				{"json_verbose", []string{"--json", "--verbose"}, true},
+				{"summary", []string{"--json-summary"}, true},
 			} {
 				t.Run(command.name+"/"+task+"/"+output.name, func(t *testing.T) {
 					args := append(append([]string{}, command.args...), output.args...)
@@ -226,12 +225,7 @@ func TestEmptyStateDiagnosticsPreserveDirectory(t *testing.T) {
 						t.Fatalf("空の保存先の拒否が不正: %d %s / %s", code, &stdout, &stderr)
 					}
 					message := stdout.String()
-					if !output.json && command.args[0] == "begin" {
-						if stdout.Len() != 0 {
-							t.Fatalf("拒否したbeginの標準出力が空ではありません: %s", &stdout)
-						}
-						message = stderr.String()
-					} else if !validProgress(stderr.String()) {
+					if !validProgress(stderr.String()) {
 						t.Fatalf("標準エラーが不正です: %s", &stderr)
 					}
 					if output.json {
@@ -248,7 +242,7 @@ func TestEmptyStateDiagnosticsPreserveDirectory(t *testing.T) {
 						}
 						message = result.Issues[0].Message
 					}
-					for _, want := range []string{"既存の .workscope は空", "保存先は変更していません", "通常の空ディレクトリ", "別名へ退避", "次の編集前に begin", "空の状態保存先から復旧する"} {
+					for _, want := range []string{"既存の .workscope は空", "保存先は変更していません", "通常の空ディレクトリ", "begin --allow <対象>", "次の編集前に begin", "過去の変更を検証済みにしない"} {
 						if !strings.Contains(message, want) {
 							t.Fatalf("診断に %q がありません: %s", want, message)
 						}

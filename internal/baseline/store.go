@@ -49,26 +49,79 @@ func (r *repository) existing(task string) ([]byte, error) {
 }
 
 func (r *repository) existingRecords(task string) ([]byte, []RecordSummary, error) {
+	state, err := r.loadState(task, false)
+	if state.handle != nil {
+		defer state.handle.Close()
+	}
+	return state.data, state.records, err
+}
+
+type stateSnapshot struct {
+	data      []byte
+	records   []RecordSummary
+	directory os.FileInfo
+	handle    *os.File
+}
+
+func directoryIdentity(dir *os.Root) (os.FileInfo, error) {
+	file, err := dir.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	// Windowsでも実体情報を遅延参照せず、開いたハンドルから取得する。
+	return file.Stat()
+}
+
+func (r *repository) sameStateDirectory(expected os.FileInfo) bool {
+	info, err := r.fs.Lstat(stateName)
+	if err != nil || info.Mode().Type() != os.ModeDir {
+		return false
+	}
+	file, err := r.fs.Open(stateName)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	current, err := file.Stat()
+	return err == nil && os.SameFile(expected, current)
+}
+
+func (r *repository) loadState(task string, allowEmpty bool) (stateSnapshot, error) {
+	state := stateSnapshot{records: []RecordSummary{}}
 	info, err := r.fs.Lstat(stateName)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, []RecordSummary{}, nil
+		return state, nil
 	}
 	if err != nil {
-		return nil, nil, fail("state_unreadable", "状態保存先を参照できません。", stateName)
+		return state, fail("state_unreadable", "状態保存先を参照できません。", stateName)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, nil, fail("foreign_state", ".workscope が通常の専用ディレクトリではありません。", stateName)
+	if info.Mode().Type() != os.ModeDir {
+		return state, fail("foreign_state", ".workscope が通常の専用ディレクトリではありません。", stateName)
 	}
 	dir, err := r.fs.OpenRoot(stateName)
 	if err != nil {
-		return nil, nil, fail("state_unreadable", "状態保存先を開けません。", stateName)
+		return state, fail("state_unreadable", "状態保存先を開けません。", stateName)
 	}
 	defer dir.Close()
-	return r.readState(dir, task, false, false)
+	state.handle, err = dir.Open(".")
+	if err != nil {
+		return state, fail("state_unreadable", "状態保存先の実体を開けません。", stateName)
+	}
+	// 保存までハンドルを保持し、削除後に同じ識別子が再利用されることを防ぐ。
+	state.directory, err = state.handle.Stat()
+	if err != nil {
+		return state, fail("state_unreadable", "状態保存先の実体を確認できません。", stateName)
+	}
+	if !r.sameStateDirectory(state.directory) {
+		return state, fail("state_changed", "確認中に状態保存先が変化しました。", stateName)
+	}
+	state.data, state.records, err = r.readState(dir, task, false, allowEmpty, "")
+	return state, err
 }
 
-// 保存時だけ、自分が取得したロックを検査対象から除く。
-func (r *repository) readState(dir *os.Root, task string, locked, created bool) ([]byte, []RecordSummary, error) {
+// 保存時だけ、自分が作成したロックと一時ファイルを検査対象から除く。
+func (r *repository) readState(dir *os.Root, task string, locked, allowEmpty bool, temporary string) ([]byte, []RecordSummary, error) {
 	file, err := dir.Open(".")
 	if err != nil {
 		return nil, nil, fail("state_unreadable", "状態保存先を読み取れません。", stateName)
@@ -80,12 +133,12 @@ func (r *repository) readState(dir *os.Root, task string, locked, created bool) 
 	}
 	var selected []byte
 	records := []RecordSummary{}
-	if len(children) == 0 {
-		return nil, nil, fail("foreign_state", "既存の .workscope は空で、workscope用の開始記録を確認できません。保存先は変更していません。通常の空ディレクトリであることを確認して別名へ退避し、次の編集前に begin を実行してください。確認手順は利用ガイドの「空の状態保存先から復旧する」を参照してください。", stateName)
+	if len(children) == 0 && !allowEmpty {
+		return nil, nil, fail("foreign_state", "既存の .workscope は空で、workscope用の開始記録を確認できません。保存先は変更していません。通常の空ディレクトリは begin --allow <対象> で利用できます。次の編集前に begin を実行し、成功を確認してください。編集後に作った記録で過去の変更を検証済みにしないでください。", stateName)
 	}
 	for _, child := range children {
 		name := child.Name()
-		if locked && name == "record.lock" {
+		if locked && (name == "record.lock" || name == temporary) {
 			continue
 		}
 		if name != recordName && !(strings.HasPrefix(name, "task-") && strings.HasSuffix(name, ".json") && hexValue(strings.TrimSuffix(strings.TrimPrefix(name, "task-"), ".json"), 64)) {
@@ -115,34 +168,45 @@ func (r *repository) readState(dir *os.Root, task string, locked, created bool) 
 		}
 		records = append(records, RecordSummary{Task: record.Task, Default: record.Task == "", BaselineID: record.ID, CreatedAt: record.CreatedAt, AllowCount: len(record.Allow)})
 	}
-	if len(records) == 0 && !created {
+	if len(records) == 0 && !allowEmpty {
 		return nil, nil, fail("foreign_state", "workscopeの正常な開始記録を確認できません。", stateName)
 	}
 	return selected, records, nil
 }
 
-func (r *repository) save(record Record, previous []byte) error {
+func (r *repository) save(record Record, previous stateSnapshot) error {
 	created := false
-	if err := r.fs.Mkdir(stateName, 0700); err == nil {
-		created = true
-	} else if !errors.Is(err, fs.ErrExist) {
-		return fail("save_failed", "専用の状態保存先を作成できません。既存の内容は変更しません。", stateName)
-	}
-	// 初回保存の失敗時だけ、自分が作った空ディレクトリを除去する。
-	defer func() {
-		if created {
-			r.fs.Remove(stateName)
+	if previous.directory == nil {
+		if err := r.fs.Mkdir(stateName, 0700); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				return fail("state_changed", "保存前に状態保存先が作成されました。既存の内容は変更しません。", stateName)
+			}
+			return fail("save_failed", "専用の状態保存先を作成できません。既存の内容は変更しません。", stateName)
 		}
-	}()
+		created = true
+	}
 	info, err := r.fs.Lstat(stateName)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fail("save_failed", "状態保存先が変化しました。", stateName)
+	if err != nil || info.Mode().Type() != os.ModeDir {
+		return fail("state_changed", "状態保存先が変化しました。", stateName)
 	}
 	dir, err := r.fs.OpenRoot(stateName)
 	if err != nil {
 		return fail("save_failed", "状態保存先を開けません。", stateName)
 	}
 	defer dir.Close()
+	identity, err := directoryIdentity(dir)
+	if err != nil {
+		return fail("save_failed", "状態保存先の実体を確認できません。", stateName)
+	}
+	if previous.directory != nil && !os.SameFile(previous.directory, identity) || !r.sameStateDirectory(identity) {
+		return fail("state_changed", "状態保存先の実体が変化しました。", stateName)
+	}
+	// 初回保存の失敗時だけ、自分が作った同じ空ディレクトリを除去する。
+	defer func() {
+		if created && r.sameStateDirectory(identity) {
+			r.fs.Remove(stateName)
+		}
+	}()
 	lock, err := dir.OpenFile("record.lock", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return fail("save_failed", "別の記録処理が実行中か、状態保存先へ書き込めません。", stateName)
@@ -150,9 +214,15 @@ func (r *repository) save(record Record, previous []byte) error {
 	lock.Close()
 	defer dir.Remove("record.lock")
 	name := RecordName(record.Task)
-	current, _, err := r.readState(dir, record.Task, true, created)
-	if err != nil || !bytes.Equal(current, previous) {
-		return fail("state_changed", "保存前に開始記録か状態保存先が変化しました。", stateName+"/"+name)
+	confirm := func(temporary string) error {
+		current, records, err := r.readState(dir, record.Task, true, len(previous.records) == 0, temporary)
+		if err != nil || !bytes.Equal(current, previous.data) || len(previous.records) == 0 && len(records) != 0 || !r.sameStateDirectory(identity) {
+			return fail("state_changed", "保存前に開始記録か状態保存先が変化しました。", stateName+"/"+name)
+		}
+		return nil
+	}
+	if err := confirm(""); err != nil {
+		return err
 	}
 	temp := ".baseline-" + token() + ".tmp"
 	file, err := dir.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -160,17 +230,39 @@ func (r *repository) save(record Record, previous []byte) error {
 		return fail("save_failed", "開始記録の一時ファイルを作成できません。", stateName)
 	}
 	defer dir.Remove(temp)
+	defer file.Close()
 	err = json.NewEncoder(file).Encode(record)
 	if err == nil {
 		err = file.Sync()
 	}
-	closeErr := file.Close()
-	if err != nil || closeErr != nil {
+	if err != nil {
 		return fail("save_failed", "開始記録の書き込みに失敗しました。以前の記録を保持します。", stateName)
+	}
+	if err := confirm(temp); err != nil {
+		return err
+	}
+	if previous.data == nil {
+		// 新規記録は、最終確認の後に同名ファイルが作られても上書きしない。
+		if err := publishNewRecord(dir, file, temp, name); err != nil {
+			return fail("save_failed", "新しい開始記録を確定できません。既存の内容は変更しません。", stateName+"/"+name)
+		}
+		if err := file.Close(); err != nil {
+			return fail("save_failed", "確定した開始記録を閉じられません。保存先を確認してください。", stateName+"/"+name)
+		}
+		if !r.sameStateDirectory(identity) {
+			return fail("state_changed", "確定中に状態保存先の実体が変化しました。", stateName)
+		}
+		return nil
 	}
 	// 既存ファイルを先に削除しない。置換に失敗しても以前の記録を保持する。
 	if err := dir.Rename(temp, name); err != nil {
 		return fail("save_failed", "開始記録の置換に失敗しました。以前の記録を保持します。", stateName)
+	}
+	if err := file.Close(); err != nil {
+		return fail("save_failed", "確定した開始記録を閉じられません。保存先を確認してください。", stateName+"/"+name)
+	}
+	if !r.sameStateDirectory(identity) {
+		return fail("state_changed", "確定中に状態保存先の実体が変化しました。", stateName)
 	}
 	return nil
 }
@@ -211,11 +303,14 @@ func BeginWithOptions(dir string, names []string, replace bool, task string, opt
 			return err
 		}
 		progress.stage("開始記録の確認")
-		previous, err := r.existing(task)
+		previous, err := r.loadState(task, true)
+		if previous.handle != nil {
+			defer previous.handle.Close()
+		}
 		if err != nil {
 			return err
 		}
-		if previous != nil && !replace {
+		if previous.data != nil && !replace {
 			return fail("baseline_exists", "開始記録が既にあります。取り直す場合は --replace を指定してください。", stateName+"/"+RecordName(task))
 		}
 		snapshot, err := r.stableSnapshot(nil)

@@ -194,7 +194,7 @@ func TestTaskSaveRejectsRecordCreatedAfterInitialRead(t *testing.T) {
 	}
 	defer r.fs.Close()
 	// 初回読取では記録がなかった状況を再現し、保存時の競合検出を確認する。
-	if err := r.save(record, nil); err == nil || describeError(err).Code != "state_changed" {
+	if err := r.save(record, stateSnapshot{}); err == nil || describeError(err).Code != "state_changed" {
 		t.Fatalf("後から作成された記録を上書きしました: %v", err)
 	}
 	if !bytes.Equal(before, taskData(t, dir, first.Task)) {
@@ -227,7 +227,7 @@ func TestTaskSaveRejectsEmptyDirectoryCreatedAfterInitialRead(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, stateName), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.save(record, nil); err == nil || describeError(err).Code != "state_changed" {
+	if err := r.save(record, stateSnapshot{}); err == nil || describeError(err).Code != "state_changed" {
 		t.Fatalf("後から作成された空ディレクトリを使用しました: %v", err)
 	}
 	children, err := os.ReadDir(filepath.Join(dir, stateName))

@@ -10,6 +10,95 @@ import (
 	"testing"
 )
 
+func TestWindowsPublishUsesCreatedFileHandle(t *testing.T) {
+	dir := t.TempDir()
+	const temporary, name = "temporary.json", "baseline.json"
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	file, err := root.OpenFile(temporary, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString("作成した記録"); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Rename(temporary, "original.tmp"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "other.json", "保護する別の内容")
+	if err := os.Symlink("other.json", filepath.Join(dir, temporary)); err != nil {
+		t.Skipf("リンクを作成できません: %v", err)
+	}
+	if err := publishNewRecord(root, file, temporary, name); err != nil {
+		t.Fatal(err)
+	}
+	for path, expected := range map[string]string{name: "作成した記録", "other.json": "保護する別の内容"} {
+		data, err := os.ReadFile(filepath.Join(dir, path))
+		if err != nil || string(data) != expected {
+			t.Fatalf("作成した記録以外を移動しました: %s %s %v", path, data, err)
+		}
+	}
+}
+
+func TestWindowsUnreadableEmptyStateIsNotInitialized(t *testing.T) {
+	dir := repo(t)
+	state := filepath.Join(dir, stateName)
+	if err := os.Mkdir(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	name, err := syscall.UTF16PtrFromString(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil,
+		syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, code := Begin(dir, []string{"tracked.txt"}, false, "")
+	if err := syscall.CloseHandle(handle); err != nil {
+		t.Fatal(err)
+	}
+	requireFailure(t, result, code, "state_unreadable")
+	if code != 2 || result.Coverage.Complete {
+		t.Fatalf("読取不能を成功扱いしました: %d %+v", code, result)
+	}
+	children, err := os.ReadDir(state)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("読取不能の保存先を変更しました: %v %v", children, err)
+	}
+}
+
+func TestWindowsLinkedEmptyStateIsNotInitialized(t *testing.T) {
+	for _, kind := range []string{"symlink", "junction"} {
+		t.Run(kind, func(t *testing.T) {
+			dir, outside := repo(t), t.TempDir()
+			state := filepath.Join(dir, stateName)
+			if kind == "symlink" {
+				if err := os.Symlink(outside, state); err != nil {
+					t.Skipf("リンクを作成できません: %v", err)
+				}
+			} else {
+				quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+				command := "New-Item -ItemType Junction -Path " + quote(state) + " -Target " + quote(outside) + " -ErrorAction Stop | Out-Null"
+				if output, err := exec.Command("pwsh", "-NoProfile", "-NonInteractive", "-Command", command).CombinedOutput(); err != nil {
+					t.Skipf("ジャンクションを作成できません: %v %s", err, output)
+				}
+			}
+			result, code := Begin(dir, []string{"tracked.txt"}, true, "")
+			requireFailure(t, result, code, "foreign_state")
+			children, err := os.ReadDir(outside)
+			if err != nil || len(children) != 0 {
+				t.Fatalf("外部の保存先へ書き込みました: %v %v", children, err)
+			}
+		})
+	}
+}
+
 func TestWindowsListUnreadableRecordIsUnknown(t *testing.T) {
 	dir := repo(t)
 	if result, code := Begin(dir, []string{"future"}, false, ""); code != 0 {
