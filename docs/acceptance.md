@@ -2,6 +2,18 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## 開始記録の一覧・進捗抑制・制限付き環境の利用手順（2026-11-09）
+
+[Issue #4](https://github.com/shouhon/workscope/issues/4)の記録一覧と[Issue #5](https://github.com/shouhon/workscope/issues/5)の進捗抑制を追加した。[Issue #6](https://github.com/shouhon/workscope/issues/6)は、実体確認処理を維持し、受入条件にある利用手順の整備で対応した。CLI版は機能追加により `0.8.0` から `0.9.0` へ更新し、保存形式と既存のJSON・終了コードは維持した。
+
+- 検証対象は開始コミット `b6bdbe0cf6e236ed4cd1bc9259a5bd6f2180b80b` に今回の製品コード・テスト・検証スクリプトを加えたソース。`checkstamp run --label issues-4-5-6 --input go.mod --input cmd --input internal --input scripts --input .github -- pwsh -NoProfile -File ./scripts/verify.ps1` が成功した。実行IDは `de4d0163a0b443304f189dae38f576fd`。同じ作業ディレクトリでの `checkstamp status` は `valid`・終了コード0だった。文書は記録の入力に含めず、差分と出典を別に確認した。
+- 整形、`go vet`、全Goテスト、Windowsビルド、総合・各コマンドのヘルプ、版表示、通常の作業ツリーとworktreeの実行ファイルによる受入確認、既存のRelease判定テストが成功した。実行ファイルの版表示は `workscope 0.9.0` で正本と一致し、SHA-256は `EC32D3A31B3E2F18346BF7455753D495C06250E6634873040767EA8695B50E13` だった。
+- `TestListRecordsWithoutCheckingCurrentHead` は既定記録と大小文字の異なる日本語タスクを通常・worktreeで作成し、HEAD変更後も選択用の一覧を取得できること、同じ記録の `check` は判定不能になること、記録・対象・インデックス・HEAD・Git設定を変更しないことを確認した。保存先未作成、既存の空の保存先、破損、未対応版、別ルート、名前不一致、別用途、リンクも区別する。
+- Windowsで共有を許さないハンドルを使い、記録の参照拒否を `state_unreadable`・`unknown`・2とし、正常な0件へ変換せず記録を保持することを確認した。参照不能と別用途の内容を分けるため、記録読み取り時の診断も整理した。
+- `TestNoProgressPreservesResultsDiagnosticsAndRecords` は通常・詳細JSON・要約JSONで、範囲内・範囲外・記録欠落・引数誤りの出力と終了コード、既存記録の保持を比較する。遅いGitを使う既存テストには、1秒を超えても定期・終了時の進捗を出さない確認を追加した。実行ファイルでも通常・worktreeの両方で結果と終了コードを比較した。
+- 主担当の検証とは別に、読み取り専用の補助担当が一覧・記録保護・進捗抑制・利用手順を静的に点検し、修正必須の指摘はなかった。テスト実行と最終判断は主担当による。
+- 制限付きシェルはプロセス起動前の初期化で失敗し、Issue #6にある実体解決時のアクセス拒否は再現できなかった。環境の承認経路では今回の編集前の `begin` が成功したが、制限下での成功や代替APIの有効性を確認したとは扱わない。必要な参照権限、読み取り専用の比較、編集前の記録、停止条件、後付け記録の限界を[利用ガイド](usage.md#制限付き実行環境で実体確認が拒否される場合)へ記載した。パス文字列での代用や実体照合の緩和は導入していない。
+
 ## 信頼先の確認段階と原因の診断（2026-10-31）
 
 [Issue #3](https://github.com/shouhon/workscope/issues/3)に対応し、信頼先の形式不正・不存在・ディレクトリ以外・Gitルートとの不一致を別々の診断コードと64で返し、確認不能は `trust_repository_unreadable`・2へ分けた。機械判定用コードと終了コードの分類変更によりCLI版を `0.7.0` から `0.8.0` へ更新し、保存・JSON形式は `schema_version: 1` を維持した。

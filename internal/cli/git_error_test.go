@@ -344,7 +344,11 @@ func TestSlowGitReportsProgressSeparatelyFromJSON(t *testing.T) {
 	t.Setenv("WORKSCOPE_TEST_REAL_GIT", gitPath)
 	t.Setenv("WORKSCOPE_TEST_GIT_OPERATION", "rev-parse --show-toplevel")
 	t.Setenv("WORKSCOPE_TEST_GIT_DELAY", "1300ms")
-	for _, args := range [][]string{{"begin", "--allow", "new.txt", "--json"}, {"check", "--json"}} {
+	for _, args := range [][]string{
+		{"begin", "--allow", "new.txt", "--json"}, {"check", "--json"},
+		{"begin", "--allow", "new.txt", "--task", "進捗なし", "--json-summary", "--no-progress"},
+		{"check", "--task", "進捗なし", "--json-summary", "--no-progress"},
+	} {
 		var stdout, stderr bytes.Buffer
 		if code := cli.Run(args, &stdout, &stderr); code != 0 {
 			t.Fatalf("%v の実行失敗: %d %s / %s", args, code, &stdout, &stderr)
@@ -353,6 +357,12 @@ func TestSlowGitReportsProgressSeparatelyFromJSON(t *testing.T) {
 		decoder := json.NewDecoder(&stdout)
 		if err := decoder.Decode(&result); err != nil || decoder.Decode(new(any)) != io.EOF {
 			t.Fatalf("進捗がJSONへ混入しました: %v", err)
+		}
+		if args[len(args)-1] == "--no-progress" {
+			if stderr.Len() != 0 {
+				t.Fatalf("遅い処理の進捗を抑制しませんでした: %s", &stderr)
+			}
+			continue
 		}
 		if !validProgress(stderr.String()) {
 			t.Fatalf("進捗の形式が不正: %s", &stderr)

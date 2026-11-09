@@ -19,10 +19,11 @@ const help = `workscope - 作業開始後の変更が許容範囲内か照合す
   workscope --version      版番号を表示する
   workscope begin --help / -h    開始記録の使い方を表示する
   workscope check --help / -h    照合の使い方を表示する
+  workscope list [--json] [--trust-repository <Gitルートの絶対パス>] [--verbose]
   workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
   workscope begin --replace --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
   workscope check [--json | --json-summary] [--task <名前>]
-  begin / check の共通指定: [--trust-repository <Gitルートの絶対パス>] [--verbose]
+  begin / check の共通指定: [--trust-repository <Gitルートの絶対パス>] [--verbose] [--no-progress]
 
 記録する照合範囲:
   Gitルートを基準に、追跡中のファイルと無視されていない未追跡ファイルを扱う。
@@ -43,6 +44,7 @@ Gitの設定や .gitignore は自動変更しない。
 これから作るパスも指定できる。パスは現在地ではなくGitルートを基準にする。
 check は開始前の変更と開始後の内容・種類・インデックスの変化を分けて表示する。
 check は開始記録を更新しない。ディレクトリと未作成の許容パスは配下を含む。
+list は保存済みの開始記録を一覧する。現在の変更の照合は check で行う。
 終了コード: 0=記録成功・範囲外の変更なし、1=範囲外の変更あり、2=判定不能、64=引数の誤り。
 begin は記録成功で0、記録不能で2、引数の誤りで64を返す。1はcheckの範囲外検出だけに使う。
 Gitの失敗時は操作・原因・次の対処を表示する。--verbose で伏字済みの詳細を表示する。
@@ -53,6 +55,7 @@ Gitの失敗時は操作・原因・次の対処を表示する。--verbose で�
 --trust-repository は確認して信頼したGitルート1件だけに、この実行中の信頼設定を渡す。
 絶対パスを指定し、begin と check のそれぞれで指定する。恒久的なGit設定は変更しない。
 長い処理では段階・確認済みファイル数・経過時間を約1秒ごとに標準エラーへ表示する。
+--no-progress は begin / check の進捗だけを省略し、診断と判定を維持する。
 範囲外の変更と判定不能が同時にある場合は、両方を表示して2を返す。
 `
 
@@ -60,7 +63,7 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
 
 使い方:
   workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--replace] [--json | --json-summary]
-                  [--trust-repository <Gitルートの絶対パス>] [--verbose]
+                  [--trust-repository <Gitルートの絶対パス>] [--verbose] [--no-progress]
   workscope begin --help / -h
 
 引数:
@@ -73,6 +76,7 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
   --trust-repository <絶対パス>  信頼するGitルート1件を、この実行だけGitへ渡す。
                    所有者と内容を事前に確認する。恒久設定や開始記録には保存しない。
   --verbose       Git診断の詳細を表示する。--json では issues[].details に含める。
+  --no-progress   定期的な進捗と終了時の進捗だけを省略する。診断は維持する。
 
 使用例:
   workscope begin --allow src --allow AGENTS.md
@@ -93,7 +97,7 @@ Git管理領域、.workscope/、無視された未追跡ファイル、リンク
 const checkHelp = `workscope check - 開始記録と現在の状態を照合する
 
 使い方:
-  workscope check [--task <名前>] [--json | --json-summary] [--trust-repository <Gitルートの絶対パス>] [--verbose]
+  workscope check [--task <名前>] [--json | --json-summary] [--trust-repository <Gitルートの絶対パス>] [--verbose] [--no-progress]
   workscope check --help / -h
 
 引数:
@@ -104,6 +108,7 @@ const checkHelp = `workscope check - 開始記録と現在の状態を照合す�
   --trust-repository <絶対パス>  信頼するGitルート1件を、この実行だけGitへ渡す。
                   begin の指定は保存されないため、check でも指定する。
   --verbose      Git診断の詳細を表示する。--json では issues[].details に含める。
+  --no-progress  定期的な進捗と終了時の進捗だけを省略する。診断は維持する。
 
 使用例:
   workscope check
@@ -134,6 +139,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "check" {
 		return runCheck(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "list" {
+		return runList(args[1:], stdout, stderr)
+	}
 
 	fmt.Fprintln(stderr, "引数が正しくないか、まだ対応していない機能です。workscope --help を確認してください。")
 	return 64
@@ -152,7 +160,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	task, taskSet := "", false
-	trust, trustSet, verbose := "", false, false
+	trust, trustSet, verbose, noProgress := "", false, false, false
 	var argumentError string
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; {
@@ -161,6 +169,8 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		case arg == "--json", arg == "--json-summary":
 		case arg == "--verbose":
 			verbose = true
+		case arg == "--no-progress":
+			noProgress = true
 		case arg == "--trust-repository", strings.HasPrefix(arg, "--trust-repository="):
 			if trustSet {
 				argumentError = "--trust-repository は1つだけ指定してください。"
@@ -218,7 +228,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	} else if dir, err := os.Getwd(); err != nil {
 		result.Issues = append(result.Issues, baseline.Issue{Code: "cwd_unavailable", Message: "現在の作業ディレクトリを確認できません。"})
 	} else {
-		result, code = withProgress(stderr, func(observer baseline.Observer) (baseline.Result, int) {
+		result, code = withProgress(stderr, noProgress, func(observer baseline.Observer) (baseline.Result, int) {
 			return baseline.CheckWithOptions(dir, task, baseline.Options{TrustRepository: trust}, observer)
 		})
 	}
@@ -309,7 +319,7 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 	allow := []string{}
 	replace := false
 	task, taskSet := "", false
-	trust, trustSet, verbose := "", false, false
+	trust, trustSet, verbose, noProgress := "", false, false, false
 	var argumentError string
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; {
@@ -318,6 +328,8 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 		case arg == "--json", arg == "--json-summary":
 		case arg == "--verbose":
 			verbose = true
+		case arg == "--no-progress":
+			noProgress = true
 		case arg == "--trust-repository", strings.HasPrefix(arg, "--trust-repository="):
 			if trustSet {
 				argumentError = "--trust-repository は1つだけ指定してください。"
@@ -391,7 +403,7 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 			result.Coverage.Complete = false
 			result.Issues = append(result.Issues, baseline.Issue{Code: "cwd_unavailable", Message: "現在の作業ディレクトリを確認できません。"})
 		} else {
-			result, code = withProgress(stderr, func(observer baseline.Observer) (baseline.Result, int) {
+			result, code = withProgress(stderr, noProgress, func(observer baseline.Observer) (baseline.Result, int) {
 				return baseline.BeginWithOptions(dir, allow, replace, task, baseline.Options{TrustRepository: trust}, observer)
 			})
 		}

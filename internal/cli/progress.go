@@ -9,7 +9,10 @@ import (
 	"workscope/internal/baseline"
 )
 
-func withProgress(stderr io.Writer, run func(baseline.Observer) (baseline.Result, int)) (baseline.Result, int) {
+func withProgress(stderr io.Writer, suppressed bool, run func(baseline.Observer) (baseline.Result, int)) (baseline.Result, int) {
+	if suppressed {
+		return run(nil)
+	}
 	var mu sync.Mutex
 	value := baseline.Progress{Stage: "処理の準備"}
 	started := time.Now()

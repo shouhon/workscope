@@ -48,7 +48,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or ($helpText -join "`n") -notmatch '使い方') {
         throw '実行ファイルのヘルプ表示が不正です。'
     }
-    foreach ($command in @('begin', 'check')) {
+    foreach ($command in @('begin', 'check', 'list')) {
         foreach ($flag in @('--help', '-h')) {
             $commandHelp = @(& ./dist/workscope.exe $command $flag)
             if ($LASTEXITCODE -ne 0 -or ($commandHelp -join "`n") -notmatch '使用例:') {

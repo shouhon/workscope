@@ -142,6 +142,34 @@ workscope begin --task '文書修正' --replace --allow docs
 
 `--task` を省略した場合は従来の `.workscope/baseline.json` だけを使い、取り直しもその記録だけに行います。旧形式の記録は移動・変換せず読めます。保存・JSON形式は `schema_version: 1` を維持します。タスク別記録のある保存先を旧版CLIで使うことはできないため、新しい版を使ってください。状態保存先に別用途の内容や破損した記録がある場合は、別タスクの指定でも記録を保護して停止します。
 
+## 保存済みの開始記録を探す
+
+タスク名を忘れた場合は、記録を変更せず一覧できます。
+
+```powershell
+workscope list
+workscope list --json
+# 一覧で選んだ名前を指定して照合する。
+workscope check --task '文書修正'
+```
+
+表示するのはタスク名、記録ID、作成日時、許容範囲の件数です。既定記録を先頭に、その後をタスク名の昇順（大小文字を区別）に並べます。JSONの `records[]` は `task`、`default`、`baseline_id`、`created_at`、`allow_count` を持ちます。既定記録は `task: ""`・`default: true` です。
+
+保存先がまだなければ `status: "listed"`、空配列と終了コード0を返し、保存先は作成しません。空の既存保存先、破損、読取不能、未対応形式、リンクや別用途の内容があれば `unknown`・2で停止します。失敗時の空配列を「記録なし」と判断せず、`status` と終了コードを確認してください。`--verbose` と `--trust-repository` は他のコマンドと同様に使えます。`list` に `--task`、`--allow`、`--replace`、`--json-summary` は指定できません。
+
+一覧は現在のHEADや対象ファイルと照合しません。HEADが変わった記録も表示するため、存在するだけでは有効な照合結果を意味しません。開始記録・対象ファイル・Git設定は変更しません。
+
+## 進捗だけを省略する
+
+繰り返す照合で進捗が不要な場合は、`begin`・`check` に `--no-progress` を付けます。
+
+```powershell
+workscope begin --task '機能追加' --allow src --no-progress
+workscope check --task '機能追加' --json-summary --no-progress
+```
+
+定期的な進捗と終了時の進捗だけを止め、エラーや必要な診断、判定内容、終了コードは維持します。通常表示、`--json`、`--json-summary` のいずれでも指定できます。診断を残すため、標準エラー全体を捨てる必要はありません。省略時は従来どおり、長い処理の進捗を標準エラーへ表示します。
+
 ## Gitを参照できない場合
 
 `begin` と `check` は、Gitの失敗時に `unknown` と終了コード2を返します。`begin` の保存失敗も2です。Gitの終了コードが1でも、workscopeの判定不能は2です。1を返すのは `check` が範囲外の変更を検出した場合だけです。
@@ -208,6 +236,39 @@ Get-PathId (Get-Location).ProviderPath
 workscopeはシェルのGit別名・関数を使わず、親の `GIT_*` をすべて除外します。別の作業領域やインデックスの記録を防ぐためです。詳細では `GIT_CONFIG_COUNT`・`GIT_CONFIG_KEY_*`・`GIT_CONFIG_VALUE_*`・`GIT_CONFIG_PARAMETERS`・`GIT_CONFIG_GLOBAL`・`GIT_CONFIG_SYSTEM`・`GIT_CONFIG_NOSYSTEM`・`GIT_DIR`・`GIT_WORK_TREE` などの指定が親にあったかを、値なしで表示します。その他は任意の変数名も伏せて件数だけを出します。HOME・USERPROFILE・XDG_CONFIG_HOMEなどの通常の設定探索条件は継承しますが、実際にどの設定ファイルを読めたかは未確認です。
 
 このため、直接実行時だけ環境変数や `git -c` で `safe.directory` を渡した場合、workscope内のGitとは結果が異なり得ます。`--trust-repository` は親の環境設定を引き継ぐ代わりに、今回信頼するルートを明示する入口です。`git_permission_denied` はアクセス権限の問題なので、必要な対象の読取権限とGitの実行権限を確認してください。
+
+### 制限付き実行環境で実体確認が拒否される場合
+
+Gitでルートを取得できても、`--trust-repository` の実体確認に必要な参照まで許可されているとは限りません。Windows向けのGoの実装は、リンク解決と名前の正規化でパスの各要素を参照します。そのため、作業ツリーを読めても親の参照が制限される環境では拒否され得ます。[リンク解決の実装](https://go.dev/src/path/filepath/symlink.go)と[Windowsの名前の正規化](https://go.dev/src/path/filepath/symlink_windows.go)が根拠ですが、診断だけで拒否されたパス要素やWindows APIを特定することはできません。
+
+必要な権限は、Gitの起動、作業ツリーと対象ファイルの読み取り・列挙、Git管理領域（worktreeの共通管理領域を含む）の読み取り、ルートまでのパス要素とリンク先の実体確認です。`begin` だけは、その作業ツリーの `.workscope/` に作成・保存する権限も必要です。Git設定・インデックスへの書き込み権限は不要です。実体確認の権限不足を、パス文字列の一致で代用しません。
+
+編集前に、所有者と内容を確認したGitルートで、記録していない診断用タスク名を選んで次を実行します。
+
+```powershell
+$repoRoot = (Get-Location).ProviderPath
+git --no-optional-locks -C $repoRoot -c safe.directory= -c "safe.directory=$repoRoot" rev-parse --show-toplevel
+$gitCode = $LASTEXITCODE
+workscope check --task '権限確認用の未記録名' --trust-repository $repoRoot --json-summary --verbose --no-progress
+$checkCode = $LASTEXITCODE
+```
+
+`trust_repository_unreadable`・2なら、確認段階と原因区分を読みます。環境が提供する承認経路で読み取り専用の同一 `check` を実行できる場合だけ、同じ実行ファイル・ルート・引数で比較してください。`baseline_missing` まで進めば信頼先とGitルートの確認は通過していますが、`begin` の保存や全対象の走査の成功はまだ確認できていません。
+
+制限下で確認できない場合は、権限や隔離を一括解除せず、実行環境が対象と操作を承認した経路で、**編集する前に**次の記録を作ります。承認経路が使えない場合は開始記録を作れたと扱わず、そこで停止します。
+
+```powershell
+# 環境が承認した実行経路で、対象のGitルートから実行する。
+workscope begin --task '今回の作業' --allow src --allow AGENTS.md --trust-repository $repoRoot --json-summary --no-progress
+if ($LASTEXITCODE -ne 0) { throw '開始記録を作成できませんでした。編集を開始しないでください。' }
+# status=recorded と baseline_id を確認してから編集する。
+# 作業後も実体確認できる承認済みの実行経路で照合する。
+workscope check --task '今回の作業' --trust-repository $repoRoot --json-summary --no-progress
+```
+
+許容パスは実際の作業に合わせ、`safe.directory=*`、別ルートへの切り替え、診断用の `--replace` は使いません。同じ環境でも対象や制限が変われば、再度確認が必要です。編集後に記録を作っても、過去の編集を開始後の変更として検証できません。既に編集していた場合は、編集前に取得していたGit状態と差分を手動で照合し、その限界を報告します。
+
+2026-11-09の確認では、この開発環境の制限付きシェルはプロセス起動前の初期化で失敗しました。環境の承認経路では編集前の `begin` が成功しましたが、これはIssue #6の実体解決時のアクセス拒否の再現や、制限下での記録成功を示すものではありません。拒否されたパス要素と最小権限での代替APIの有効性は未確認で、実体確認処理は維持しています。
 
 終了コードを調べる場合は、ビルドまたは導入した `workscope.exe` を直接実行し、直後の `$LASTEXITCODE` を確認してください。`go run` など別の起動用コマンドを経由した場合、そのコマンド自体の終了コードと区別する必要があります。
 

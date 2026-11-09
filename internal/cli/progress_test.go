@@ -24,7 +24,7 @@ func (w *progressWriter) Write(data []byte) (int, error) {
 
 func TestProgressRemainsVisibleWhileFileReadWaits(t *testing.T) {
 	writer := &progressWriter{seen: make(chan struct{})}
-	_, code := withProgress(writer, func(observer baseline.Observer) (baseline.Result, int) {
+	_, code := withProgress(writer, false, func(observer baseline.Observer) (baseline.Result, int) {
 		observer(baseline.Progress{Stage: "ファイル走査", Files: 37, Pass: 2})
 		// ファイルの読み取りが進まない間も、表示側が現在の状態を通知する。
 		select {

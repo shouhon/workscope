@@ -10,6 +10,33 @@ import (
 	"testing"
 )
 
+func TestWindowsListUnreadableRecordIsUnknown(t *testing.T) {
+	dir := repo(t)
+	if result, code := Begin(dir, []string{"future"}, false, ""); code != 0 {
+		t.Fatalf("準備失敗: %d %+v", code, result)
+	}
+	before := taskData(t, dir, "")
+	name, err := syscall.UTF16PtrFromString(filepath.Join(dir, stateName, recordName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil, syscall.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, code := List(dir, Options{})
+	closeErr := syscall.CloseHandle(handle)
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if code != 2 || result.Status != "unknown" || len(result.Issues) != 1 || result.Issues[0].Code != "state_unreadable" || len(result.Records) != 0 {
+		t.Fatalf("読取不能を正常な0件にしました: %d %+v", code, result)
+	}
+	if !bytes.Equal(before, taskData(t, dir, "")) {
+		t.Fatal("読取不能の一覧が記録を変更しました")
+	}
+}
+
 func TestWindowsFailedReplacementPreservesBaseline(t *testing.T) {
 	for _, task := range []string{"", "日本語 作業"} {
 		t.Run(task, func(t *testing.T) {

@@ -44,36 +44,44 @@ func token() string {
 }
 
 func (r *repository) existing(task string) ([]byte, error) {
+	selected, _, err := r.existingRecords(task)
+	return selected, err
+}
+
+func (r *repository) existingRecords(task string) ([]byte, []RecordSummary, error) {
 	info, err := r.fs.Lstat(stateName)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, []RecordSummary{}, nil
 	}
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fail("foreign_state", ".workscope が通常の専用ディレクトリではありません。", stateName)
+	if err != nil {
+		return nil, nil, fail("state_unreadable", "状態保存先を参照できません。", stateName)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fail("foreign_state", ".workscope が通常の専用ディレクトリではありません。", stateName)
 	}
 	dir, err := r.fs.OpenRoot(stateName)
 	if err != nil {
-		return nil, fail("state_unreadable", "状態保存先を開けません。", stateName)
+		return nil, nil, fail("state_unreadable", "状態保存先を開けません。", stateName)
 	}
 	defer dir.Close()
 	return r.readState(dir, task, false, false)
 }
 
 // 保存時だけ、自分が取得したロックを検査対象から除く。
-func (r *repository) readState(dir *os.Root, task string, locked, created bool) ([]byte, error) {
+func (r *repository) readState(dir *os.Root, task string, locked, created bool) ([]byte, []RecordSummary, error) {
 	file, err := dir.Open(".")
 	if err != nil {
-		return nil, err
+		return nil, nil, fail("state_unreadable", "状態保存先を読み取れません。", stateName)
 	}
 	children, err := file.ReadDir(-1)
 	file.Close()
 	if err != nil {
-		return nil, err
+		return nil, nil, fail("state_unreadable", "状態保存先の一覧を読み取れません。", stateName)
 	}
 	var selected []byte
-	records := 0
+	records := []RecordSummary{}
 	if len(children) == 0 {
-		return nil, fail("foreign_state", "既存の .workscope は空で、workscope用の開始記録を確認できません。保存先は変更していません。通常の空ディレクトリであることを確認して別名へ退避し、次の編集前に begin を実行してください。確認手順は利用ガイドの「空の状態保存先から復旧する」を参照してください。", stateName)
+		return nil, nil, fail("foreign_state", "既存の .workscope は空で、workscope用の開始記録を確認できません。保存先は変更していません。通常の空ディレクトリであることを確認して別名へ退避し、次の編集前に begin を実行してください。確認手順は利用ガイドの「空の状態保存先から復旧する」を参照してください。", stateName)
 	}
 	for _, child := range children {
 		name := child.Name()
@@ -81,15 +89,18 @@ func (r *repository) readState(dir *os.Root, task string, locked, created bool) 
 			continue
 		}
 		if name != recordName && !(strings.HasPrefix(name, "task-") && strings.HasSuffix(name, ".json") && hexValue(strings.TrimSuffix(strings.TrimPrefix(name, "task-"), ".json"), 64)) {
-			return nil, fail("foreign_state", "状態保存先に開始記録以外のファイルがあります。既存の内容を確認してください。", stateName)
+			return nil, nil, fail("foreign_state", "状態保存先に開始記録以外のファイルがあります。既存の内容を確認してください。", stateName)
 		}
 		info, err := dir.Lstat(name)
-		if err != nil || !info.Mode().IsRegular() {
-			return nil, fail("foreign_state", "workscopeの正常な開始記録を確認できません。", stateName+"/"+name)
+		if err != nil {
+			return nil, nil, fail("state_unreadable", "開始記録を参照できません。", stateName+"/"+name)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, nil, fail("foreign_state", "workscopeの正常な開始記録を確認できません。", stateName+"/"+name)
 		}
 		data, err := dir.ReadFile(name)
 		if err != nil {
-			return nil, fail("state_unreadable", "開始記録を読み取れません。", stateName+"/"+name)
+			return nil, nil, fail("state_unreadable", "開始記録を読み取れません。", stateName+"/"+name)
 		}
 		var record Record
 		decoder := json.NewDecoder(bytes.NewReader(data))
@@ -97,17 +108,17 @@ func (r *repository) readState(dir *os.Root, task string, locked, created bool) 
 		err = decoder.Decode(&record)
 		var extra any
 		if err != nil || decoder.Decode(&extra) != io.EOF || !r.validRecord(record) || !validTask(record.Task) || RecordName(record.Task) != name {
-			return nil, fail("foreign_state", "開始記録の識別情報・保存形式・ルート・タスク名が一致しません。既存の記録を保護して停止します。", stateName+"/"+name)
+			return nil, nil, fail("foreign_state", "開始記録の識別情報・保存形式・ルート・タスク名が一致しません。既存の記録を保護して停止します。", stateName+"/"+name)
 		}
 		if name == RecordName(task) {
 			selected = data
 		}
-		records++
+		records = append(records, RecordSummary{Task: record.Task, Default: record.Task == "", BaselineID: record.ID, CreatedAt: record.CreatedAt, AllowCount: len(record.Allow)})
 	}
-	if records == 0 && !created {
-		return nil, fail("foreign_state", "workscopeの正常な開始記録を確認できません。", stateName)
+	if len(records) == 0 && !created {
+		return nil, nil, fail("foreign_state", "workscopeの正常な開始記録を確認できません。", stateName)
 	}
-	return selected, nil
+	return selected, records, nil
 }
 
 func (r *repository) save(record Record, previous []byte) error {
@@ -139,7 +150,7 @@ func (r *repository) save(record Record, previous []byte) error {
 	lock.Close()
 	defer dir.Remove("record.lock")
 	name := RecordName(record.Task)
-	current, err := r.readState(dir, record.Task, true, created)
+	current, _, err := r.readState(dir, record.Task, true, created)
 	if err != nil || !bytes.Equal(current, previous) {
 		return fail("state_changed", "保存前に開始記録か状態保存先が変化しました。", stateName+"/"+name)
 	}

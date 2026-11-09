@@ -184,6 +184,10 @@ try {
         Write-Fixture $directory '未追跡 空白.txt' '開始前の未追跡'
         Write-Fixture $directory 'ignored/hidden.txt' '照合しない本文'
         $before = Get-ProtectedState $directory $false
+        $emptyList = Invoke-Captured $executable $subdirectory @('list', '--json')
+        $emptyData = ConvertFrom-Json -InputObject $emptyList.Text -AsHashtable
+        Assert-Acceptance ($emptyList.Code -eq 0 -and $emptyList.Error -eq '' -and $emptyData.status -ceq 'listed' -and $emptyData.records.Count -eq 0 -and
+            -not (Test-Path -LiteralPath (Join-Path $directory '.workscope'))) "$mode の記録前の一覧が不正です。"
         # 信頼先の誤りを分離し、記録・Git状態を変更しないことを実行ファイルで確認する。
         foreach ($case in @(
             @{ Trust = 'relative'; Code = 'invalid_trust_repository'; Stage = '引数の形式確認' },
@@ -358,7 +362,7 @@ try {
         $defaultPath = Join-Path $directory '.workscope/baseline.json'
         $defaultHash = (Get-FileHash -LiteralPath $defaultPath -Algorithm SHA256).Hash
         $before = Get-ProtectedState $directory $false
-        $taskA = Invoke-Summary $subdirectory @('begin', '--task', '日本語 作業A', '--allow', 'Src') 0 'recorded'
+        $taskA = Invoke-Summary $subdirectory @('begin', '--task', '日本語 作業A', '--allow', 'Src', '--no-progress') 0 'recorded'
         Assert-Acceptance ($taskA.Data.task -ceq '日本語 作業A' -and $taskA.Data.baseline_id -cne $replacement.Data.baseline_id) "$mode のタスクの記録が不正です。"
         Assert-Acceptance ($taskA.Data.counts.changes_since_begin -eq 0 -and
             $taskA.Data.counts.index_changes -eq 0 -and $taskA.Data.counts.out_of_scope_changes -eq 0) "$mode の記録成功の要約件数が不正です。"
@@ -375,6 +379,26 @@ try {
         $checkedB = Invoke-JSON $subdirectory @('check', '--task', '日本語 作業a') 0 'within_scope'
         Assert-Acceptance ($checkedA.Data.baseline_id -ceq $taskA.Data.baseline_id -and $checkedA.Data.changes_since_begin.Count -eq 1 -and $checkedA.Data.out_of_scope_changes[0].path -ceq 'config.toml') "$mode のタスクAの開始時点・許容範囲が不正です。"
         Assert-Acceptance ($checkedB.Data.baseline_id -ceq $taskB.Data.baseline_id -and $checkedB.Data.changes_since_begin.Count -eq 0) "$mode のタスクBの開始時点が不正です。"
+        $listing = Invoke-Captured $executable $subdirectory @('list', '--json', '--trust-repository', $directory)
+        $listDocument = [System.Text.Json.JsonDocument]::Parse($listing.Text)
+        $listDocument.Dispose()
+        $listData = ConvertFrom-Json -InputObject $listing.Text -AsHashtable
+        Assert-Acceptance ($listing.Code -eq 0 -and $listing.Error -eq '' -and $listData.status -ceq 'listed' -and
+            $listData.command -ceq 'list' -and $listData.records.Count -eq 3 -and $listData.records[0].default -and
+            $listData.records[0].baseline_id -ceq $replacement.Data.baseline_id -and
+            $listData.records[1].task -ceq '日本語 作業A' -and $listData.records[2].task -ceq '日本語 作業a' -and
+            $listData.records[1].allow_count -eq 1) "$mode の一覧の順序・記録情報が不正です。"
+        foreach ($arguments in @(
+            @('check', '--task=日本語 作業A', '--json'),
+            @('check', '--task=日本語 作業a', '--json-summary'),
+            @('check', '--task=未記録', '--json'),
+            @('begin', '--task=日本語 作業A', '--allow', 'Src', '--json-summary'),
+            @('check', '--task=日本語 作業A')
+        )) {
+            $normal = Invoke-Captured $executable $subdirectory $arguments
+            $quiet = Invoke-Captured $executable $subdirectory ($arguments + @('--no-progress'))
+            Assert-Acceptance ($normal.Code -eq $quiet.Code -and $normal.Text -ceq $quiet.Text -and $quiet.Error -notmatch '進捗:') "$mode の進捗抑制が結果・終了コードを変更しました。"
+        }
         $missing = Invoke-JSON $subdirectory @('check', '--task', '未記録') 2 'unknown'
         Assert-Acceptance ($missing.Data.baseline_id -ceq '' -and $missing.Data.issues[0].code -ceq 'baseline_missing') "$mode の未記録名で別の開始記録を使いました。"
         $null = Invoke-JSON $subdirectory @('begin', '--task', '日本語 作業A', '--allow', 'Src') 2 'unknown'
@@ -399,6 +423,9 @@ try {
         $before = Get-ProtectedState $directory
         $null = Invoke-JSON $subdirectory @('check') 2 'unknown'
         $null = Invoke-JSON $subdirectory @('begin', '--replace', '--allow', 'Src') 2 'unknown'
+        $brokenList = Invoke-Captured $executable $subdirectory @('list', '--json')
+        $brokenData = ConvertFrom-Json -InputObject $brokenList.Text -AsHashtable
+        Assert-Acceptance ($brokenList.Code -eq 2 -and $brokenData.status -ceq 'unknown' -and $brokenData.issues.Count -gt 0) "$mode の破損を正常な空一覧にしました。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の破損した開始記録を変更しました。"
         Write-Output "受入確認に成功しました: $mode （終了コード0・1・2・64、JSON、日本語表示、タスク別記録、非破壊性）"
     }
