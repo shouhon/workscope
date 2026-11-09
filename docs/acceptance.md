@@ -2,6 +2,18 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## 実行バイナリ内の対処案内（2026-11-09、Issue #6の再対応）
+
+前回の文書整備だけでは、実行バイナリしか渡されない利用者・LLMが対処を判断する条件を満たしていなかった。今回は確認不能時の診断と内蔵ヘルプへ手順を収録し、CLI版を表示案内の修正として `0.9.0` から `0.9.1` へ更新した。実体確認処理、保存形式、JSONの項目、終了コードは維持した。
+
+- 基点は `1fe88025944a6fb55245c552b20e550330b7951c`。`checkstamp run --label issue-6-binary-guidance --input go.mod --input cmd --input internal --input scripts --input .github -- pwsh -NoProfile -File ./scripts/verify.ps1` が成功した。実行IDは `95228cac3bd6e8f71cbc5b5401af827f`。結果採用直前に同じ作業ディレクトリの `checkstamp status` で `valid`・終了コード0を確認した。文書は記録の入力に含めず、差分とローカルリンクを別に確認した。
+- 整形、静的検査、全Goテスト、Windowsビルド、ヘルプと版表示、通常・worktreeの実行ファイルの受入確認、既存のRelease検査が成功した。版表示は `workscope 0.9.1` で正本と一致し、実行ファイルのSHA-256は `4C37CAD5C618A6C57CFF31BFD3B31F8A23E90EBD3C8653E5A76463B2A316DC6A` だった。
+- `scripts/acceptance.ps1` は実行ファイルだけを一時ディレクトリへコピーし、PATHからGitを外して、総合・`begin`・`check`・`list` の `--help` と `-h` を起動した。承認された実行経路、同条件の読み取り専用確認、編集前の記録成功、既存記録の保持、停止条件、後付け記録の限界、実行例を外部文書なしで取得でき、状態を作らないことを確認した。
+- Windowsで読み取り権限を持ち共有を許さないディレクトリハンドルを開き、信頼先の参照不能を再現した。コピーした実行ファイルを通常・worktreeの一時リポジトリから起動し、通常表示・詳細JSON・要約JSONに必要な対処と停止条件が含まれることを確認した。`--verbose` がなくても案内が読め、詳細指定の有無、単一JSON、`unknown`・2、パスの伏せ字、開始記録を作らないこと、対象・インデックス・HEAD・Git設定の保持も確認した。
+- `TestTrustRepositoryReferenceFailuresAreSafeAndClassified` は、確認段階ごとのアクセス拒否・原因未確認・確認中の消失でも通常の `message` に対処と停止条件が含まれ、診断の伏せ字・分類が維持されることを確認する。
+- 読み取り専用の独立確認で、診断と内蔵ヘルプの到達性、案内の条件、受入スクリプトを点検し、修正必須の指摘はなかった。テスト実行と最終判断は主担当による。
+- 共有制限の再現は元の制限付き環境でのアクセス拒否と同一ではない。元の拒否API・パス要素と最小権限での代替APIの有効性は引き続き未確認で、今回の修正はバイナリ内の対処案内の不足を対象とする。
+
 ## 開始記録の一覧・進捗抑制・制限付き環境の利用手順（2026-11-09）
 
 [Issue #4](https://github.com/shouhon/workscope/issues/4)の記録一覧と[Issue #5](https://github.com/shouhon/workscope/issues/5)の進捗抑制を追加した。[Issue #6](https://github.com/shouhon/workscope/issues/6)は、実体確認処理を維持し、受入条件にある利用手順の整備で対応した。CLI版は機能追加により `0.8.0` から `0.9.0` へ更新し、保存形式と既存のJSON・終了コードは維持した。

@@ -62,6 +62,11 @@ func unreadableTrustRepository(stage, name string, err error, rejectMissing bool
 			code, invalid = "trust_repository_not_found", true
 		}
 	}
+	if !invalid {
+		advice += " 対象と操作を実行環境が承認する実行経路が使える場合だけ、同じ対象の読み取り専用 check で比較してください。使えない場合や確認不能が続く場合は停止してください。" +
+			"開始記録がない場合は編集前の begin が成功するまで編集を始めないでください。既存の開始記録は取り直さず、同じ記録で check してください。" +
+			"編集後に作った記録で過去の変更を検証済みにしないでください。詳しい手順: workscope --help。"
+	}
 	// OSエラーの本文やパスは含めず、確認できた原因区分だけを返す。
 	message := fmt.Sprintf("--trust-repository の確認に失敗しました（%s、%s）。%s", stage, cause, advice)
 	return &failure{invalid: invalid, issue: trustRepositoryIssue(code, message, stage, cause, name)}

@@ -11,6 +11,12 @@ function Assert-Acceptance([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
 }
 
+function Assert-TrustRecoveryAdvice([string] $Text) {
+    foreach ($needed in @('実行環境が承認', '読み取り専用 check', '編集前の begin', '停止', '既存の開始記録は取り直さず', '編集後に作った記録で過去の変更を検証済みにしない', 'workscope --help')) {
+        Assert-Acceptance ($Text.Contains($needed)) "バイナリの診断に必要な案内がありません: $needed"
+    }
+}
+
 function Invoke-Captured([string] $File, [string] $Directory, [string[]] $Arguments) {
     $start = [System.Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $File
@@ -141,6 +147,35 @@ $temporary = [System.IO.Directory]::CreateTempSubdirectory('workscope-acceptance
 try {
     $emptyHooks = Join-Path $temporary '空のフック'
     $null = [System.IO.Directory]::CreateDirectory($emptyHooks)
+    # 文書・ソース・Gitを参照できない場所でも、実行ファイル内の手順を取得できることを確認する。
+    $binaryOnly = Join-Path $temporary '実行ファイルのみ'
+    $null = [System.IO.Directory]::CreateDirectory($binaryOnly)
+    $binaryExecutable = Join-Path $binaryOnly 'workscope.exe'
+    Copy-Item -LiteralPath $executable -Destination $binaryExecutable
+    $previousPath = $env:PATH
+    try {
+        $env:PATH = $binaryOnly
+        foreach ($arguments in @(@('--help'), @('-h'), @('begin', '--help'), @('begin', '-h'), @('check', '--help'), @('check', '-h'), @('list', '--help'), @('list', '-h'))) {
+            $response = Invoke-Captured $binaryExecutable $binaryOnly $arguments
+            Assert-Acceptance ($response.Code -eq 0 -and $response.Error -eq '') 'バイナリ単体のヘルプを取得できません。'
+            foreach ($needed in @('制限付き実行環境', '実行経路が使える場合だけ', '読み取り専用 check', '編集前の begin', 'status=recorded', 'baseline_id', '既存の開始記録は取り直さず', '停止', '編集後に作った記録で過去の変更を検証済みにしない', 'baseline_missing', 'パス文字列の一致で代用しない')) {
+                Assert-Acceptance ($response.Text.Contains($needed)) "バイナリ単体のヘルプに必要な手順がありません: $needed"
+            }
+        }
+        Assert-Acceptance (@(Get-ChildItem -LiteralPath $binaryOnly -Force).Count -eq 1) 'ヘルプが実行ファイル以外の状態を作成しました。'
+    }
+    finally { $env:PATH = $previousPath }
+
+    # アクセス制御は変更せず、共有を許さないハンドルで参照不能を再現する。
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class WorkscopeTrustAcceptance {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    public static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+}
+'@
     # 起動用コマンドを介さず、実行ファイル自身のGit失敗時の終了コードを確認する。
     $outsideGit = Join-Path $temporary 'Git外'
     $null = [System.IO.Directory]::CreateDirectory($outsideGit)
@@ -188,6 +223,44 @@ try {
         $emptyData = ConvertFrom-Json -InputObject $emptyList.Text -AsHashtable
         Assert-Acceptance ($emptyList.Code -eq 0 -and $emptyList.Error -eq '' -and $emptyData.status -ceq 'listed' -and $emptyData.records.Count -eq 0 -and
             -not (Test-Path -LiteralPath (Join-Path $directory '.workscope'))) "$mode の記録前の一覧が不正です。"
+        $lockedTrust = Join-Path $temporary "$mode/非公開の信頼先"
+        $null = [System.IO.Directory]::CreateDirectory($lockedTrust)
+        $trustLock = [WorkscopeTrustAcceptance]::CreateFileW($lockedTrust, [uint32]2147483648, 0, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+        try {
+            Assert-Acceptance (-not $trustLock.IsInvalid) '参照不能を再現するハンドルを取得できません。'
+            foreach ($command in @('begin', 'check', 'list')) {
+                $modes = if ($command -eq 'list') { @('', '--json') } else { @('', '--json', '--json-summary') }
+                foreach ($outputMode in $modes) {
+                    foreach ($verbose in @($false, $true)) {
+                        $arguments = @($command, '--trust-repository', $lockedTrust)
+                        if ($command -eq 'begin') { $arguments += @('--allow', 'Src') }
+                        if ($command -ne 'list') { $arguments += '--no-progress' }
+                        if ($outputMode -ne '') { $arguments += $outputMode }
+                        if ($verbose) { $arguments += '--verbose' }
+                        $response = Invoke-Captured $binaryExecutable $subdirectory $arguments
+                        Assert-Acceptance ($response.Code -eq 2) "$mode の信頼先参照不能が終了コード2ではありません: $command $outputMode verbose=$verbose、実際=$($response.Code)"
+                        if ($outputMode -eq '') {
+                            $message = $response.Text + $response.Error
+                        } else {
+                            $document = [System.Text.Json.JsonDocument]::Parse($response.Text)
+                            try {
+                                Assert-Acceptance ($document.RootElement.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) '診断が単一JSONではありません。'
+                            }
+                            finally { $document.Dispose() }
+                            $data = ConvertFrom-Json -InputObject $response.Text -AsHashtable
+                            Assert-Acceptance ($response.Error -eq '' -and $data.status -ceq 'unknown' -and $data.issues.Count -eq 1 -and
+                                $data.issues[0].code -ceq 'trust_repository_unreadable' -and $data.issues[0].ContainsKey('details') -eq $verbose) '参照不能のJSON・詳細指定が不正です。'
+                            $message = $data.issues[0].message
+                        }
+                        Assert-TrustRecoveryAdvice $message
+                        Assert-Acceptance (-not ($response.Text + $response.Error).Contains('非公開の信頼先')) '信頼先の生のパスが診断に漏れました。'
+                    }
+                }
+            }
+        }
+        finally { $trustLock.Dispose() }
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false) -and
+            -not (Test-Path -LiteralPath (Join-Path $directory '.workscope'))) "$mode の参照不能の案内が記録・対象・Git状態を変更しました。"
         # 信頼先の誤りを分離し、記録・Git状態を変更しないことを実行ファイルで確認する。
         foreach ($case in @(
             @{ Trust = 'relative'; Code = 'invalid_trust_repository'; Stage = '引数の形式確認' },

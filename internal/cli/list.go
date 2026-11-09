@@ -31,7 +31,7 @@ const listHelp = `workscope list - 保存済みの開始記録を読み取り専
 HEADが変わった記録も一覧する。現在の変更が範囲内かどうかは check で確認する。
 保存先がなければ0件。空の既存保存先・破損・読取不能・未対応形式では失敗する。
 終了コード: 0=一覧取得成功、2=一覧取得不能、64=引数の誤り。
-`
+` + trustRepositoryHelp
 
 func runList(args []string, stdout, stderr io.Writer) int {
 	result := baseline.ListResult{SchemaVersion: baseline.SchemaVersion, Tool: "workscope", Command: "list", Status: "unknown", Records: []baseline.RecordSummary{}, Issues: []baseline.Issue{}}

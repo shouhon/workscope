@@ -107,6 +107,13 @@ func TestTrustRepositoryReferenceFailuresAreSafeAndClassified(t *testing.T) {
 				if issue.Code != tc.code || issue.Path != "" || !strings.Contains(issue.Message, tc.cause) || !strings.Contains(issue.Message, "確認してください") || !strings.Contains(issue.Details, stage) || !strings.Contains(issue.Details, tc.cause) || !strings.Contains(issue.Details, diagnosticPath(name)) {
 					t.Fatalf("確認段階・原因・対処・パス識別子が不正です: %+v", issue)
 				}
+				if !tc.invalid {
+					for _, needed := range []string{"実行環境が承認", "読み取り専用 check", "編集前の begin", "停止", "既存の開始記録は取り直さず", "編集後に作った記録で過去の変更を検証済みにしない", "workscope --help"} {
+						if !strings.Contains(issue.Message, needed) {
+							t.Fatalf("外部文書なしで判断するための案内がありません: %s %+v", needed, issue)
+						}
+					}
+				}
 				for _, secret := range []string{name, filepath.ToSlash(name), "個人名と秘密値", "秘密の操作", "秘密のOSエラー本文"} {
 					if strings.Contains(issue.Message+issue.Details, secret) {
 						t.Fatal("診断に生のパスまたはOSエラーが漏れました")
