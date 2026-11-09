@@ -288,6 +288,12 @@ func BeginWithOptions(dir string, names []string, replace bool, task string, opt
 		result.Issues = append(result.Issues, Issue{Code: "missing_allow", Message: "--allow を1つ以上指定してください。"})
 		return result, 64
 	}
+	if options.Extend && (replace || !validReason(options.Reason)) || !options.Extend && options.Reason != "" {
+		result.Status = "invalid_arguments"
+		result.Coverage.Complete = false
+		result.Issues = append(result.Issues, Issue{Code: "invalid_arguments", Message: "--extend には --reason で前後の空白・制御文字のない理由を指定し、--replace と併用しないでください。"})
+		return result, 64
+	}
 	progress := newProgress(observers)
 	err := func() error {
 		progress.stage("Git作業場所の確認")
@@ -303,12 +309,15 @@ func BeginWithOptions(dir string, names []string, replace bool, task string, opt
 			return err
 		}
 		progress.stage("開始記録の確認")
-		previous, err := r.loadState(task, true)
+		previous, err := r.loadState(task, !options.Extend)
 		if previous.handle != nil {
 			defer previous.handle.Close()
 		}
 		if err != nil {
 			return err
+		}
+		if options.Extend {
+			return r.extend(names, allow, task, options.Reason, previous, &result)
 		}
 		if previous.data != nil && !replace {
 			return fail("baseline_exists", "開始記録が既にあります。取り直す場合は --replace を指定してください。", stateName+"/"+RecordName(task))

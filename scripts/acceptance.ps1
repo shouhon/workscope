@@ -499,6 +499,58 @@ public static class WorkscopeTrustAcceptance {
         Assert-Acceptance ($defaultCheck.Data.baseline_id -ceq $replacement.Data.baseline_id -and -not $defaultCheck.Data.ContainsKey('task')) "$mode のタスク省略時に従来の記録を使いませんでした。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode のタスク照合が既存状態を変更しました。"
 
+        # 元の開始状態を保持して許容範囲を追加し、後から加わった許可を明示する。
+        $taskHash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(
+            [System.Text.Encoding]::UTF8.GetBytes('日本語 作業A'))).ToLowerInvariant()
+        $extensionPath = Join-Path $directory ".workscope/task-$taskHash.json"
+        $originalRecord = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($extensionPath)) -AsHashtable
+        $before = Get-ProtectedState $directory
+        $recordHandle = [System.IO.File]::Open($extensionPath, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        try {
+            $failed = Invoke-JSON $subdirectory @('begin', '--extend', '--task', '日本語 作業A',
+                '--allow', '追加許容', '--reason', '追加依頼', '--no-progress') 2 'unknown'
+            Assert-Acceptance ($failed.Data.issues[0].code -ceq 'save_failed') "$mode の範囲追加の保存失敗を再現できません。"
+        }
+        finally { $recordHandle.Dispose() }
+        $null = Invoke-JSON $subdirectory @('begin', '--extend', '--replace', '--allow', 'config.toml', '--reason', '追加') 64 'invalid_arguments'
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の拒否した範囲追加が既存状態を変更しました。"
+
+        $before = Get-ProtectedState $directory $false
+        $extended = Invoke-JSON $subdirectory @('begin', '--extend', '--task', '日本語 作業A',
+            '--allow', '追加許容', '--reason', '未編集の追加対象', '--no-progress') 0 'extended'
+        Assert-Acceptance ($extended.Data.baseline_id -ceq $taskA.Data.baseline_id -and
+            $extended.Data.scope_extensions.Count -eq 1 -and
+            $extended.Data.scope_extensions[0].changed_paths.Count -eq 0 -and
+            $before -ceq (Get-ProtectedState $directory $false)) "$mode の範囲追加が開始点か対象を変更しました。"
+        Write-Fixture $directory '追加許容/追加.txt' '許容追加後の編集'
+        Write-Fixture $directory 'index-only.txt' '範囲外に残す編集'
+        $extendedSummary = Invoke-Summary $subdirectory @('begin', '--extend', '--task', '日本語 作業A',
+            '--allow', 'config.toml', '--reason', '設定変更の追加依頼', '--no-progress') 0 'extended'
+        Assert-Acceptance ($extendedSummary.Data.scope_extensions.Count -eq 2 -and
+            $extendedSummary.Data.scope_extensions[1].changed_path_count -eq 1 -and
+            -not $extendedSummary.Data.scope_extensions[1].ContainsKey('changed_paths')) "$mode の追加前の編集か要約が不正です。"
+        $updatedRecord = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($extensionPath)) -AsHashtable
+        foreach ($field in @('baseline_id', 'created_at', 'head', 'files', 'index', 'preexisting_changes')) {
+            Assert-Acceptance ((ConvertTo-Json -InputObject $originalRecord[$field] -Depth 100 -Compress) -ceq
+                (ConvertTo-Json -InputObject $updatedRecord[$field] -Depth 100 -Compress)) "$mode の範囲追加で開始時の $field が変わりました。"
+        }
+        Assert-Acceptance ($updatedRecord.initial_allow.Count -eq 1 -and
+            $updatedRecord.scope_extensions[1].changed_paths[0] -ceq 'config.toml' -and
+            $defaultHash -ceq (Get-FileHash -LiteralPath $defaultPath -Algorithm SHA256).Hash) "$mode の当初の範囲・追加前の編集・別記録の保持が不正です。"
+        $before = Get-ProtectedState $directory
+        $extendedCheck = Invoke-JSON $subdirectory @('check', '--task', '日本語 作業A', '--no-progress') 1 'out_of_scope'
+        $extendedCheckSummary = Invoke-Summary $subdirectory @('check', '--task', '日本語 作業A', '--no-progress') 1 'out_of_scope'
+        Assert-Acceptance ($extendedCheck.Data.baseline_id -ceq $taskA.Data.baseline_id -and
+            $extendedCheck.Data.scope_extensions.Count -eq 2 -and
+            $extendedCheck.Data.out_of_scope_changes.Count -eq 1 -and
+            $extendedCheck.Data.out_of_scope_changes[0].path -ceq 'index-only.txt' -and
+            $extendedCheckSummary.Data.scope_extensions[1].changed_path_count -eq 1) "$mode の範囲追加後の照合が不正です。"
+        $response = Invoke-Captured $executable $subdirectory @('check', '--task', '日本語 作業A', '--no-progress')
+        Assert-Acceptance ($response.Code -eq 1 -and $response.Text.Contains('許容範囲の追加履歴: 2件') -and
+            $response.Text.Contains('追加時にすでに変更があったパス: 1件') -and
+            $before -ceq (Get-ProtectedState $directory)) "$mode の履歴表示か照合の非破壊性が不正です。"
+
         Write-Fixture $directory '.workscope/baseline.json' '{'
         $before = Get-ProtectedState $directory
         $null = Invoke-JSON $subdirectory @('check') 2 'unknown'

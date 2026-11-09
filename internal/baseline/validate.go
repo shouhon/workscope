@@ -4,9 +4,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
+
+func validReason(reason string) bool {
+	return reason != "" && utf8.ValidString(reason) && strings.TrimSpace(reason) == reason && !strings.ContainsFunc(reason, unicode.IsControl)
+}
 
 func hexValue(value string, sizes ...int) bool {
 	for _, size := range sizes {
@@ -32,12 +39,21 @@ func (r *repository) validRecord(record Record) bool {
 	validPath := func(name string) bool {
 		return validGitPath(name) && !strings.ContainsRune(name, 0) && !r.protected(name)
 	}
-	seen := map[string]bool{}
-	for _, allow := range record.Allow {
-		if (!validPath(allow.Path) && !(allow.Path == "." && allow.Kind == "directory")) || seen[allow.Path] || (allow.Kind != "file" && allow.Kind != "directory" && allow.Kind != "future") {
+	validAllow := func(allowed []Allowed) bool {
+		if len(allowed) == 0 {
 			return false
 		}
-		seen[allow.Path] = true
+		seen := map[string]bool{}
+		for _, allow := range allowed {
+			if (!validPath(allow.Path) && !(allow.Path == "." && allow.Kind == "directory")) || seen[pathKey(allow.Path)] || (allow.Kind != "file" && allow.Kind != "directory" && allow.Kind != "future") {
+				return false
+			}
+			seen[pathKey(allow.Path)] = true
+		}
+		return true
+	}
+	if !validAllow(record.Allow) || !validScopeHistory(record, validAllow, validPath) {
+		return false
 	}
 	files := map[string]bool{}
 	for i, entry := range record.Files {
@@ -83,4 +99,35 @@ func (r *repository) validRecord(record Record) bool {
 		}
 	}
 	return true
+}
+
+func validScopeHistory(record Record, validAllow func([]Allowed) bool, validPath func(string) bool) bool {
+	if len(record.ScopeExtensions) == 0 {
+		return record.InitialAllow == nil
+	}
+	if !validAllow(record.InitialAllow) {
+		return false
+	}
+	allowed := append([]Allowed{}, record.InitialAllow...)
+	previousTime, _ := time.Parse(time.RFC3339Nano, record.CreatedAt)
+	for _, extension := range record.ScopeExtensions {
+		addedAt, err := time.Parse(time.RFC3339Nano, extension.AddedAt)
+		if err != nil || addedAt.Before(previousTime) || !validReason(extension.Reason) || !validAllow(extension.Allow) || extension.ChangedPaths == nil {
+			return false
+		}
+		previousTime = addedAt
+		for i, name := range extension.ChangedPaths {
+			if !validPath(name) || !withinScope(name, extension.Allow) || withinScope(name, allowed) || i > 0 && extension.ChangedPaths[i-1] >= name {
+				return false
+			}
+		}
+		for _, addition := range extension.Allow {
+			if withinScope(addition.Path, allowed) {
+				return false
+			}
+			allowed = append(allowed, addition)
+		}
+	}
+	sort.Slice(allowed, func(i, j int) bool { return allowed[i].Path < allowed[j].Path })
+	return reflect.DeepEqual(allowed, record.Allow)
 }

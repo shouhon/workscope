@@ -2,6 +2,19 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## 開始状態を保持した許容範囲の追加（2026-11-09、Issue #8）
+
+[Issue #8](https://github.com/shouhon/workscope/issues/8)を採用し、`begin --extend --allow <追加対象> --reason <理由>` を追加した。機能追加としてCLI版を `0.10.0` から `0.11.0` へ更新した。最初の開始状態は保持し、許容範囲と追加履歴だけを更新する。従来の記録を変換せず読み、保存・JSON形式は付加項目として `schema_version: 1` を維持する。
+
+- 基点は `a1e1df5dcb8a914a0dc3935bde0788e621e743e9`。`checkstamp run --label issue-8-final --input cmd --input internal --input scripts --input go.mod --input .github --input AGENTS.md --input .gitignore --input README.md --input docs/requirements.md --input docs/usage.md --input docs/architecture.md --json-summary -- pwsh -NoProfile -File ./scripts/verify.ps1` が成功した。実行IDは `1f6405dd45bed05a1ccbcfe68be6d533`。結果採用時に同じ作業ディレクトリで `checkstamp status` が `valid`・終了コード0、現在の入力の変更0件と確認した。この結果を書く受入・開発計画文書は入力に含めず、差分と参照を別に確認した。
+- 整形、`go vet`、全Goテスト、Windowsビルド、総合・個別ヘルプ、通常・worktreeの実行ファイルの受入確認、既存のRelease判定・公開保護の検査が成功した。実行ファイルの表示は正本と同じ `workscope 0.11.0`、SHA-256は `1357C962A7585CC2E30851B662E519ACF258103447DBA506A108F5FB37DABBB9`。
+- `TestScopeExtensionPreservesOriginalStateAndOtherTasks` と受入スクリプトで、複数回の追加後も記録ID、開始日時、HEAD、ファイル、インデックス、開始前の変更が不変で、別タスクも保持されることを確認した。未編集対象の追加後の編集を開始時から照合し、無関係な変更が範囲外に残ること、`check`・`list` の読み取り専用、明示した `--replace` の取り直しも確認した。
+- 追加前の作業ファイルの編集、インデックスだけの変化、開始前からの未コミット変更、削除済み対象を追加履歴へ残すことを確認した。ディレクトリと未作成パスの配下、似た名前の範囲外、元はファイルだった許容対象の種類の保持も確認した。
+- 不正なパス・指定・理由、記録の欠落・破損・別ルート・未知形式、HEAD変更、追加履歴の欠落・矛盾・不正日時・範囲外の変更パスを拒否した。同時の記録取り直し、保存先の差し替え、Windowsの読取不能・置換失敗を再現し、元の記録と競合した処理の内容を保持した。
+- 通常表示・詳細JSON・要約JSONで履歴と終了コードを確認した。要約は履歴の日時・理由・件数だけを返し、パス明細を含めない。`lychee --offline --include-fragments --no-progress` で変更文書のローカルリンクと見出し参照も検査し、エラー0件だった。
+- 読み取り専用の補助担当が製品コードと受入確認を独立点検し、重大な不具合は見つからなかった。旧CLIは保存先全体を形式検証するため、拡張後は同じ `.workscope` の全記録を対応したCLIで扱う注意を、指摘に従って利用ガイドと要件へ明記した。実行検証と最終判断は主担当による。外部依存は追加していない。
+- Issue #7は基点の `0.10.0` で導入済みと確認した。空の保存先の安全な再利用は今回の必須検証でも成功した。専用の追加オプションは現行の `begin` と役割が重なるため追加しない。
+
 ## 空の状態保存先での開始（2026-11-09、Issue #7）
 
 [Issue #7](https://github.com/shouhon/workscope/issues/7)に対応し、通常の空の `.workscope` を、追加指定や利用者の確認なしで `begin` から利用できるようにした。既定の開始動作を変える機能追加としてCLI版を `0.9.1` から `0.10.0` へ更新した。保存・JSON形式、既存記録の取り直し、終了コードの意味は維持する。`check` と `list` は空の保存先を初期化しない。

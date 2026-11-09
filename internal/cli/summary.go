@@ -17,18 +17,26 @@ type observedCounts struct {
 	OutOfScopeChanges int `json:"out_of_scope_changes"`
 }
 
+type scopeExtensionSummary struct {
+	AddedAt          string `json:"added_at"`
+	Reason           string `json:"reason"`
+	AllowCount       int    `json:"allow_count"`
+	ChangedPathCount int    `json:"changed_path_count"`
+}
+
 type summaryResult struct {
-	SchemaVersion  int               `json:"schema_version"`
-	Tool           string            `json:"tool"`
-	Command        string            `json:"command"`
-	Status         string            `json:"status"`
-	BaselineID     string            `json:"baseline_id"`
-	Task           string            `json:"task,omitempty"`
-	Root           string            `json:"root"`
-	Coverage       baseline.Coverage `json:"coverage"`
-	Counts         summaryCounts     `json:"counts"`
-	ObservedCounts *observedCounts   `json:"observed_counts,omitempty"`
-	Issues         []baseline.Issue  `json:"issues"`
+	SchemaVersion   int                     `json:"schema_version"`
+	Tool            string                  `json:"tool"`
+	Command         string                  `json:"command"`
+	Status          string                  `json:"status"`
+	BaselineID      string                  `json:"baseline_id"`
+	Task            string                  `json:"task,omitempty"`
+	ScopeExtensions []scopeExtensionSummary `json:"scope_extensions,omitempty"`
+	Root            string                  `json:"root"`
+	Coverage        baseline.Coverage       `json:"coverage"`
+	Counts          summaryCounts           `json:"counts"`
+	ObservedCounts  *observedCounts         `json:"observed_counts,omitempty"`
+	Issues          []baseline.Issue        `json:"issues"`
 }
 
 func summarize(result baseline.Result) summaryResult {
@@ -39,6 +47,11 @@ func summarize(result baseline.Result) summaryResult {
 		Counts: summaryCounts{Issues: len(result.Issues)},
 	}
 	preexisting := len(result.PreexistingChanges)
+	for _, extension := range result.ScopeExtensions {
+		summary.ScopeExtensions = append(summary.ScopeExtensions, scopeExtensionSummary{
+			AddedAt: extension.AddedAt, Reason: extension.Reason, AllowCount: len(extension.Allow), ChangedPathCount: len(extension.ChangedPaths),
+		})
+	}
 	changes, index, outside := len(result.ChangesSinceBegin), len(result.IndexChanges), len(result.OutOfScopeChanges)
 	if result.Coverage.Complete || result.BaselineID != "" {
 		summary.Counts.PreexistingChanges = &preexisting

@@ -22,6 +22,7 @@ const help = `workscope - 作業開始後の変更が許容範囲内か照合す
   workscope list [--json] [--trust-repository <Gitルートの絶対パス>] [--verbose]
   workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
   workscope begin --replace --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
+  workscope begin --extend --allow <追加対象> --reason <理由> [--task <名前>] [--json | --json-summary]
   workscope check [--json | --json-summary] [--task <名前>]
   begin / check の共通指定: [--trust-repository <Gitルートの絶対パス>] [--verbose] [--no-progress]
 
@@ -38,7 +39,9 @@ const help = `workscope - 作業開始後の変更が許容範囲内か照合す
 Gitの設定や .gitignore は自動変更しない。
 状態をGitから除外するには、利用者が .gitignore に /.workscope/ を追加する。
 
-既存記録は --replace なしで上書きしない。取り直しは指定したタスクの記録だけに行う。
+既存記録の開始状態は --replace なしで取り直さない。指定したタスクの記録だけを扱う。
+begin --extend は開始状態を保って許容パスを追加する。--reason が必須で、--replace と併用不可。
+追加した日時・理由・パスと、追加時にすでに変更のあったパスを履歴に残し、checkでも示す。
 通常の空の .workscope は begin でそのまま利用できる。追加の指定や退避は不要。
 別用途の .workscope は使用しない。
 リンクは参照先の文字列だけを記録し、リンク配下は --allow に指定できない。
@@ -65,6 +68,7 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
 使い方:
   workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--replace] [--json | --json-summary]
                   [--trust-repository <Gitルートの絶対パス>] [--verbose] [--no-progress]
+  workscope begin --extend --allow <追加対象> --reason <理由> [--task <名前>] [--json | --json-summary]
   workscope begin --help / -h
 
 引数:
@@ -72,6 +76,8 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
                    ファイル・ディレクトリ・これから作るパスを指定する。
   --task <名前>   任意。タスク別の開始記録を使う。checkでも同じ名前を指定する。
   --replace       選んだ開始記録を明示的に取り直す。他の記録は変更しない。
+  --extend        開始状態を保ち、選んだ記録の許容パスだけを追加する。--replace と併用不可。
+  --reason <理由> --extend のとき必須。前後の空白・制御文字のない追加理由を履歴へ残す。
   --json          結果を標準出力へJSONオブジェクト1件で返す。
   --json-summary  変更の明細を省き、判定・件数・問題をJSONで返す。--json と併用不可。
   --trust-repository <絶対パス>  信頼するGitルート1件を、この実行だけGitへ渡す。
@@ -84,9 +90,14 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
   workscope begin --task '文書修正' --allow docs --json
   workscope begin --task '機能追加' --allow src --json-summary
   workscope begin --task '文書修正' --replace --allow docs
+  workscope begin --task '文書修正' --extend --allow README.md --reason '追加依頼で説明を更新'
   workscope begin --allow src --trust-repository 'D:\作業\対象プロジェクト'
 
-既存記録は --replace なしでは上書きしない。
+既存記録の開始状態は --replace なしでは取り直さない。
+--extend は記録ID・開始日時・HEAD・ファイル・インデックス・開始前の変更を保持する。
+追加履歴は check と両JSONでも確認できる。追加前の編集は開始前の変更へ移さない。
+追加時点ですでに変更のあるパスも履歴に残す。追加前にその範囲の変更が許されていた証拠にはならない。
+HEAD変更、破損、読取不能、保存失敗・競合では追加せず、元の記録を保持する。
 通常の空の .workscope はそのまま利用する。追加の指定や退避は不要。
 隠し項目を含む別用途の内容、リンク、読取不能、保存中の競合があれば停止する。
 開始点は今回の begin の時点であり、以前の編集を後付けで検証する記録は作れない。
@@ -121,6 +132,7 @@ const checkHelp = `workscope check - 開始記録と現在の状態を照合す�
   workscope check --trust-repository 'D:\作業\対象プロジェクト' --verbose
 
 開始前からある変更と開始後の変化、インデックスの変化を分けて表示する。
+後から許容パスを追加した記録では、当初の許容範囲と追加履歴も示す。
 開始記録・対象ファイル・Git設定を更新しない。--allow と --replace は指定できない。
 長い処理の進捗は標準エラーへ表示し、JSONには混ぜない。
 要約の未確認の総件数はnullとし、確認できた変更件数は observed_counts に下限として示す。
@@ -272,6 +284,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	default:
 		text.WriteString("判定不能の対象があります。完全な照合はできません。\n")
 	}
+	writeScopeHistory(&text, result)
 	fmt.Fprintf(&text, "開始前からあった変更: %d件\n", len(result.PreexistingChanges))
 	for _, change := range result.PreexistingChanges {
 		fmt.Fprintf(&text, "  %q (Git状態: %s)\n", change.Path, change.Status)
@@ -322,6 +335,7 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 	}
 	allow := []string{}
 	replace := false
+	extend, reason, reasonSet := false, "", false
 	task, taskSet := "", false
 	trust, trustSet, verbose, noProgress := "", false, false, false
 	var argumentError string
@@ -355,6 +369,24 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 			}
 		case arg == "--replace":
 			replace = true
+		case arg == "--extend":
+			extend = true
+		case arg == "--reason", strings.HasPrefix(arg, "--reason="):
+			if reasonSet {
+				argumentError = "--reason は1つだけ指定してください。"
+				break
+			}
+			reasonSet = true
+			if arg == "--reason" {
+				if i+1 == len(args) || strings.HasPrefix(args[i+1], "--") {
+					argumentError = "--reason の理由がありません。"
+					break
+				}
+				i++
+				reason = args[i]
+			} else {
+				reason = strings.TrimPrefix(arg, "--reason=")
+			}
 		case arg == "--task", strings.HasPrefix(arg, "--task="):
 			if taskSet {
 				argumentError = "--task は1つだけ指定してください。"
@@ -393,6 +425,9 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 	if argumentError == "" && jsonOutput && jsonSummary {
 		argumentError = "--json と --json-summary は併用できません。"
 	}
+	if argumentError == "" && (extend && replace || reasonSet && !extend) {
+		argumentError = "--extend と --replace は併用できません。--reason は --extend のときだけ指定してください。"
+	}
 	result := baseline.NewResult()
 	result.Task = task
 	code := 64
@@ -408,7 +443,7 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 			result.Issues = append(result.Issues, baseline.Issue{Code: "cwd_unavailable", Message: "現在の作業ディレクトリを確認できません。"})
 		} else {
 			result, code = withProgress(stderr, noProgress, func(observer baseline.Observer) (baseline.Result, int) {
-				return baseline.BeginWithOptions(dir, allow, replace, task, baseline.Options{TrustRepository: trust}, observer)
+				return baseline.BeginWithOptions(dir, allow, replace, task, baseline.Options{TrustRepository: trust, Extend: extend, Reason: reason}, observer)
 			})
 		}
 	}
@@ -437,8 +472,34 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 	if result.Task != "" {
 		fmt.Fprintf(&text, "タスク: %q\n", result.Task)
 	}
-	fmt.Fprintf(&text, "開始記録を保存しました。開始時の変更: %d件\n保存先: %s/.workscope/%s\n照合対象: 追跡中・無視されていない未追跡ファイル、リンク自体、インデックス。\n対象外: 無視された未追跡ファイル、Git管理領域、状態保存先、サブモジュールの内容。\n", len(result.PreexistingChanges), result.Root, baseline.RecordName(task))
+	if result.Status == "extended" {
+		text.WriteString("許容範囲を追加しました。開始記録IDと開始状態を保持しています。\n")
+		writeScopeHistory(&text, result)
+	} else {
+		text.WriteString("開始記録を保存しました。")
+	}
+	fmt.Fprintf(&text, "開始時の変更: %d件\n保存先: %s/.workscope/%s\n照合対象: 追跡中・無視されていない未追跡ファイル、リンク自体、インデックス。\n対象外: 無視された未追跡ファイル、Git管理領域、状態保存先、サブモジュールの内容。\n", len(result.PreexistingChanges), result.Root, baseline.RecordName(task))
 	return writeOutput(stdout, stderr, text.String())
+}
+
+func writeScopeHistory(text *strings.Builder, result baseline.Result) {
+	if len(result.ScopeExtensions) == 0 {
+		return
+	}
+	fmt.Fprintf(text, "許容範囲の追加履歴: %d件（開始状態は保持）\n当初の許容パス:\n", len(result.ScopeExtensions))
+	for _, allow := range result.InitialAllow {
+		fmt.Fprintf(text, "  %q\n", allow.Path)
+	}
+	for _, extension := range result.ScopeExtensions {
+		fmt.Fprintf(text, "  追加日時: %s、理由: %q\n", extension.AddedAt, extension.Reason)
+		for _, allow := range extension.Allow {
+			fmt.Fprintf(text, "    追加: %q\n", allow.Path)
+		}
+		fmt.Fprintf(text, "    追加時にすでに変更があったパス: %d件\n", len(extension.ChangedPaths))
+		for _, name := range extension.ChangedPaths {
+			fmt.Fprintf(text, "      %q\n", name)
+		}
+	}
 }
 
 func selectDiagnostics(result *baseline.Result, verbose bool) {

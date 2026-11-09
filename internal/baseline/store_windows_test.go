@@ -159,6 +159,48 @@ func TestWindowsFailedReplacementPreservesBaseline(t *testing.T) {
 	}
 }
 
+func TestWindowsScopeExtensionFailuresPreserveBaseline(t *testing.T) {
+	for _, kind := range []string{"replacement", "record_unreadable", "file_unreadable"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := extensionRepo(t)
+			if result, code := Begin(dir, []string{"tracked.txt"}, false, ""); code != 0 {
+				t.Fatalf("準備失敗: %d %+v", code, result)
+			}
+			before := taskData(t, dir, "")
+			path := filepath.Join(dir, stateName, recordName)
+			var share uint32
+			if kind == "replacement" {
+				share = syscall.FILE_SHARE_READ | syscall.FILE_SHARE_WRITE
+			}
+			if kind == "file_unreadable" {
+				path = filepath.Join(dir, "outside.txt")
+			}
+			name, err := syscall.UTF16PtrFromString(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, share, nil, syscall.OPEN_EXISTING, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, code := BeginWithOptions(dir, []string{"second.txt"}, false, "", Options{Extend: true, Reason: "追加"})
+			if err := syscall.CloseHandle(handle); err != nil {
+				t.Fatal(err)
+			}
+			if code != 2 || result.Status != "unknown" || result.Coverage.Complete || len(result.Issues) == 0 {
+				t.Fatalf("読取不能か保存失敗を成功扱い: %d %+v", code, result)
+			}
+			if kind == "replacement" {
+				requireFailure(t, result, code, "save_failed")
+			}
+			children, err := os.ReadDir(filepath.Join(dir, stateName))
+			if err != nil || len(children) != 1 || !bytes.Equal(before, taskData(t, dir, "")) {
+				t.Fatalf("失敗後に記録が変わったか一時ファイルが残存: %v %v", children, err)
+			}
+		})
+	}
+}
+
 func TestWindowsUnreadableFileNeverRecordsSuccess(t *testing.T) {
 	dir := repo(t)
 	name, err := syscall.UTF16PtrFromString(filepath.Join(dir, "tracked.txt"))

@@ -47,6 +47,8 @@ func CheckWithOptions(dir, task string, options Options, observers ...Observer) 
 		}
 		result.BaselineID = record.ID
 		result.PreexistingChanges = record.PreexistingChanges
+		result.InitialAllow = record.InitialAllow
+		result.ScopeExtensions = record.ScopeExtensions
 		current, err := r.stableSnapshot(record.Files)
 		if current.Submodules != nil {
 			result.Coverage.Submodules = current.Submodules
