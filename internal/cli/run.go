@@ -225,8 +225,10 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 			if task == "" {
 				argumentError = "--task の名前がありません。"
 			}
+		case !strings.HasPrefix(arg, "-"):
+			argumentError = "check は位置引数を受け付けません。名前付きの開始記録は --task <名前> で選択してください。詳しくは workscope check --help を確認してください。"
 		default:
-			argumentError = "check の引数が正しくありません。workscope --help を確認してください。"
+			argumentError = "check の引数が正しくありません。workscope check --help を確認してください。"
 		}
 		if argumentError != "" {
 			break

@@ -333,6 +333,67 @@ func TestCheckJSONUnknownAndInvalidArguments(t *testing.T) {
 	}
 }
 
+func TestCheckArgumentGuidance(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("PATH", t.TempDir())
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		task       string
+		positional bool
+	}{
+		{"位置引数", []string{"check", "example"}, "", true},
+		{"複数の位置引数", []string{"check", "example", "other"}, "", true},
+		{"選択済みタスクと位置引数", []string{"check", "--task", "explicit", "example"}, "explicit", true},
+		{"未知のオプション", []string{"check", "--unknown"}, "", false},
+	} {
+		for _, format := range []string{"", "--json", "--json-summary"} {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				args := append([]string(nil), tc.args...)
+				if format != "" {
+					args = append(args, format)
+				}
+				var stdout, stderr bytes.Buffer
+				if code := cli.Run(args, &stdout, &stderr); code != 64 {
+					t.Fatalf("終了コード = %d、期待値 = 64", code)
+				}
+				message := stderr.String()
+				if format == "" {
+					if stdout.Len() != 0 {
+						t.Fatalf("引数エラーを標準出力へ表示しました: %s", &stdout)
+					}
+				} else {
+					var result baseline.Result
+					decoder := json.NewDecoder(&stdout)
+					if err := decoder.Decode(&result); err != nil {
+						t.Fatal(err)
+					}
+					if err := decoder.Decode(new(any)); err != io.EOF || stderr.Len() != 0 {
+						t.Fatalf("JSONが1件でないか、標準エラーに出力があります: %v / %s", err, &stderr)
+					}
+					if result.Status != "invalid_arguments" || result.Command != "check" || result.Task != tc.task || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Code != "invalid_arguments" {
+						t.Fatalf("引数エラーのJSON契約が不正: %+v", result)
+					}
+					message = result.Issues[0].Message
+				}
+				if !strings.Contains(message, "workscope check --help") {
+					t.Errorf("個別ヘルプへの案内がありません: %s", message)
+				}
+				for _, want := range []string{"位置引数を受け付けません", "--task <名前>"} {
+					if strings.Contains(message, want) != tc.positional {
+						t.Errorf("原因に応じた案内が不正です (%q): %s", want, message)
+					}
+				}
+			})
+		}
+	}
+	children, err := os.ReadDir(dir)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("引数エラーで状態を作成しました: %v %v", children, err)
+	}
+}
+
 func TestBeginOutsideGitReturnsUnknownJSON(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var stdout, stderr bytes.Buffer
