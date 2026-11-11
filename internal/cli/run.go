@@ -61,7 +61,7 @@ Gitの失敗時は操作・原因・次の対処を表示する。--verbose で�
 長い処理では段階・確認済みファイル数・経過時間を約1秒ごとに標準エラーへ表示する。
 --no-progress は begin / check の進捗だけを省略し、診断と判定を維持する。
 範囲外の変更と判定不能が同時にある場合は、両方を表示して2を返す。
-` + trustRepositoryHelp
+` + powershellExitHelp + trustRepositoryHelp
 
 const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を記録する
 
@@ -107,7 +107,7 @@ Git管理領域、.workscope/、無視された未追跡ファイル、リンク
 長い処理の進捗は標準エラーへ表示し、JSONには混ぜない。
 要約の未確認の総件数はnullとし、確認できた変更件数は observed_counts に下限として示す。
 終了コード: 0=記録成功、2=記録不能、64=引数の誤り。
-` + trustRepositoryHelp
+` + powershellExitHelp + trustRepositoryHelp
 
 const checkHelp = `workscope check - 開始記録と現在の状態を照合する
 
@@ -137,10 +137,16 @@ const checkHelp = `workscope check - 開始記録と現在の状態を照合す�
 長い処理の進捗は標準エラーへ表示し、JSONには混ぜない。
 要約の未確認の総件数はnullとし、確認できた変更件数は observed_counts に下限として示す。
 終了コード: 0=範囲外の変更なし、1=範囲外の変更あり、2=判定不能、64=引数の誤り。
-` + trustRepositoryHelp
+` + powershellExitHelp + trustRepositoryHelp
 
 // Run はCLIを実行し、プロセスに返す終了コードを返す。
-func Run(args []string, stdout, stderr io.Writer) int {
+func Run(args []string, stdout, stderr io.Writer) (code int) {
+	defer func() {
+		if code == 2 {
+			fmt.Fprint(stderr, unknownExitDiagnostic)
+		}
+	}()
+
 	if len(args) == 1 {
 		switch args[0] {
 		case "--help", "-h":

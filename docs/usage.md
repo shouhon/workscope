@@ -29,12 +29,13 @@ workscope begin --task '機能追加' --allow src --json-summary
 
 # 編集後、同じタスクの開始記録と照合する
 $text = workscope check --task '機能追加' --json-summary
-$code = $LASTEXITCODE
+$workscopeExit = $LASTEXITCODE
 $result = $text | ConvertFrom-Json
 $result.status
 $result.coverage.complete
 $result.counts
-# スクリプトの終了時は、加工前に保持した $code を使う
+# 対話中は、加工前に保持した終了コードを確認する
+$workscopeExit
 ```
 
 `counts` は次の項目を持ちます。完全に照合できた場合の0は、該当する変更がないことを示します。
@@ -52,6 +53,35 @@ $result.counts
 読み取り不能やHEAD変更などで `coverage.complete` が `false` になった場合、`counts` の開始後・ステージ・範囲外の総件数は `null` です。代わりに `observed_counts` の同名の3項目で、検出できた件数を下限として返します。例えば `counts.out_of_scope_changes: null` と `observed_counts.out_of_scope_changes: 1` は「範囲外を少なくとも1件検出したが、総件数は未確認」という意味です。下限が0でも、変更なしとは判断できません。
 
 開始記録を取得できなければ `counts.preexisting_changes` も `null` です。正常な開始記録を取得できていれば、現在の照合が不完全でも開始前の件数は返します。問題数は常に整数です。完全な照合では `observed_counts` を省略します。要約でも終了コードと既存記録の保護は同じで、`check` は記録を更新しません。
+
+### 非対話のPowerShellへ終了コードを引き継ぐ
+
+判定不能時は、実行ファイルも自身の終了コード2とPowerShellでの対処を標準エラーへ表示します。JSON指定や `--no-progress` 指定でもこの診断は残ります。`workscope --help` と各コマンドの `--help` でも実行例を確認できます。
+
+workscope自身の終了コードと、それを起動したPowerShellプロセスの終了コードは別です。`pwsh -Command` は、末尾の外部コマンドが2を返しても、明示的な `exit` がないと外側へ1を返すことがあります。JSONの加工などが後続して成功すると、外側が0になることもあります。[PowerShellの公式資料](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh?view=powershell-7.6#-command--c)も参照してください。
+
+PowerShellから非対話の子プロセスを起動する場合や、AIのコマンド実行ツールへ渡す場合は、CLIの直後に `$LASTEXITCODE` を保持し、最後にその値を `exit` で返します。次はPowerShellから呼び出す例です。対象のGit作業ディレクトリで実行し、タスク名を保存済みの名前に置き換えてください。
+
+```powershell
+pwsh -NoProfile -NonInteractive -Command 'workscope check --task "機能追加" --json-summary --no-progress; $workscopeExit = $LASTEXITCODE; exit $workscopeExit'
+# 外側でもworkscope自身の終了コードを取得する
+$LASTEXITCODE
+```
+
+JSONを加工する場合も、加工前に保持した終了コードを返します。
+
+```powershell
+pwsh -NoProfile -NonInteractive -Command '
+    $text = workscope check --task "機能追加" --json-summary --no-progress
+    $workscopeExit = $LASTEXITCODE
+    $result = $text | ConvertFrom-Json
+    $result | Select-Object status, coverage, counts | ConvertTo-Json -Depth 5
+    exit $workscopeExit
+'
+$LASTEXITCODE
+```
+
+`exit` は実行中のPowerShellを終了させるため、対話中は冒頭の例のように保持した値を確認してください。終了コード1は範囲外の変更あり、2は判定不能です。JSONの `status`・`coverage.complete` も併せて確認し、判定不能を成功や範囲外の変更へ読み替えないでください。`--no-progress` は進捗だけを省略します。原因を確認できるように標準エラーの診断は残し、JSONの標準出力へ結合しないでください。
 
 ## 開始記録を作る
 

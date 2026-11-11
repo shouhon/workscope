@@ -33,7 +33,7 @@ func runSummary(t *testing.T, args []string, wantCode int) jsonSummary {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	args = append(append([]string{}, args...), "--json-summary")
-	if code := cli.Run(args, &stdout, &stderr); code != wantCode || !validProgress(stderr.String()) {
+	if code := cli.Run(args, &stdout, &stderr); code != wantCode || !validCommandStderr(stderr.String(), wantCode) {
 		t.Fatalf("%v: 終了コード=%d、期待値=%d、出力=%s / %s", args, code, wantCode, &stdout, &stderr)
 	}
 	var result jsonSummary

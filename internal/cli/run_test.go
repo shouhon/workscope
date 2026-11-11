@@ -225,7 +225,7 @@ func TestEmptyStateCheckDiagnosticsPreserveDirectory(t *testing.T) {
 						t.Fatalf("空の保存先の拒否が不正: %d %s / %s", code, &stdout, &stderr)
 					}
 					message := stdout.String()
-					if !validProgress(stderr.String()) {
+					if !validCommandStderr(stderr.String(), 2) {
 						t.Fatalf("標準エラーが不正です: %s", &stderr)
 					}
 					if output.json {
@@ -327,7 +327,7 @@ func TestCheckJSONUnknownAndInvalidArguments(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		code := cli.Run(tc.args, &stdout, &stderr)
 		var result baseline.Result
-		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != tc.code || result.Status != tc.status || result.Command != "check" || result.Coverage.Complete || len(result.Issues) == 0 || !validProgress(stderr.String()) {
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != tc.code || result.Status != tc.status || result.Command != "check" || result.Coverage.Complete || len(result.Issues) == 0 || !validCommandStderr(stderr.String(), tc.code) {
 			t.Fatalf("失敗時のJSON契約が不正: %v %d %s / %s / %v", tc.args, code, &stdout, &stderr, err)
 		}
 	}
@@ -401,7 +401,7 @@ func TestBeginOutsideGitReturnsUnknownJSON(t *testing.T) {
 		t.Fatalf("終了コード = %d", code)
 	}
 	var result baseline.Result
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Status != "unknown" || !validProgress(stderr.String()) {
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Status != "unknown" || !validCommandStderr(stderr.String(), 2) {
 		t.Fatalf("判定不能のJSONが不正: %s / %s / %v", &stdout, &stderr, err)
 	}
 }

@@ -2,6 +2,16 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## PowerShellの終了コードの案内（2026-11-11、Issue #10）
+
+[Issue #10](https://github.com/shouhon/workscope/issues/10)と利用者の追加依頼に対応し、利用ガイドだけでなく、判定不能時の実行結果と全体・各コマンドのヘルプへ案内を組み込んだ。表示の修正としてCLI版を `0.11.1` から `0.11.2` へ更新した。JSON・保存形式と終了コードの意味は維持する。
+
+- 基点は `b600b2340928f52f7420f3f123698e3cb152aa57`。`checkstamp run --label issue-10-powershell-exit --input cmd --input internal --input scripts --input go.mod --input .github --input AGENTS.md --input docs/requirements.md --input docs/usage.md --input docs/architecture.md --input README.md --json-summary -- pwsh -NoProfile -File ./scripts/package.ps1` が成功した。実行IDは `7c86381d3620bfcdc47b827d9aa498e6`。採用直前の `checkstamp status` は `valid`・子の終了コード0・現在の変更0件だった。この結果を書く受入・開発計画文書は検証入力に含めず、差分と参照を別に確認した。
+- 必須の整形確認、`go vet`、全Goテスト、Windowsビルド、版表示・ヘルプ、通常・worktreeの受入確認、Releaseの判定・公開保護の検査が成功した。実行ファイルの版表示は正本と同じ `workscope 0.11.2`。ZIPの実行ファイルとLICENSE、Scoop定義の版・ZIPハッシュ、SHA-256一覧の整合も確認した。
+- 同じ判定不能の入力で、`pwsh -Command` に明示的な `exit` がないと外側は1、JSON加工が後続すると0になることを再現した。CLI直後に保持した `$LASTEXITCODE` を最後に返すと、JSON加工の有無にかかわらず2を保持した。通常・worktreeの両方で0・1・2・64の引き継ぎと、対象・記録・インデックス・Git設定の不変を確認した。
+- 通常表示・詳細JSON・要約JSON、`--no-progress` 指定時にも、自身の終了コード2とPowerShellの対処を標準エラーへ一度だけ表示した。標準出力のJSONはオブジェクト1件のまま。Gitや文書を参照できない場所でも、実行ファイル単体の全体・各コマンドのヘルプに実行例があり、状態を作らないことを確認した。
+- 読み取り専用の補助担当が共通の終了処理、各ヘルプ、JSONの非混入、検査の厳密さ、PowerShellの再現条件を独立確認し、修正が必要な不具合は見つからなかった。補助担当は検査を実行せず、実行検証と最終判断は主担当が行った。
+
 ## 開始状態を保持した許容範囲の追加（2026-11-09、Issue #8）
 
 [Issue #8](https://github.com/shouhon/workscope/issues/8)を採用し、`begin --extend --allow <追加対象> --reason <理由>` を追加した。機能追加としてCLI版を `0.10.0` から `0.11.0` へ更新した。最初の開始状態は保持し、許容範囲と追加履歴だけを更新する。従来の記録を変換せず読み、保存・JSON形式は付加項目として `schema_version: 1` を維持する。

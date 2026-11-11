@@ -71,9 +71,47 @@ function Test-Progress([string] $Text) {
     return $true
 }
 
+function Test-CommandStderr([string] $Text, [int] $Code) {
+    if ($Code -eq 2) {
+        $advice = @(
+            'workscope自身の終了コード: 2（判定不能）。1（範囲外の変更あり）とは区別してください。',
+            'pwsh -Command の外側では1になることがあります。非対話実行ではCLI直後に $workscopeExit = $LASTEXITCODE を保持し、最後に exit $workscopeExit で返してください。',
+            '対話中は $LASTEXITCODE を確認してください。exit はシェルを終了します。実行例: workscope check --help',
+            ''
+        ) -join "`n"
+        if (-not $Text.EndsWith($advice, [System.StringComparison]::Ordinal)) { return $false }
+        $Text = $Text.Substring(0, $Text.Length - $advice.Length)
+    }
+    return (Test-Progress $Text)
+}
+
+function Assert-PowerShellExit([string] $Directory, [string[]] $Arguments, [int] $Code, [string] $Status) {
+    $pwsh = Join-Path $PSHOME 'pwsh.exe'
+    $quotedFile = "'" + $executable.Replace("'", "''") + "'"
+    $quotedArguments = @($Arguments | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ' '
+    $call = "& $quotedFile $quotedArguments"
+    $forward = $call + '; $workscopeExit = $LASTEXITCODE; exit $workscopeExit'
+    $processJSON = '$text = ' + $call + '; $workscopeExit = $LASTEXITCODE; $result = $text | ConvertFrom-Json; $result | Select-Object status, coverage, counts | ConvertTo-Json -Depth 5'
+    foreach ($command in @($forward, ($processJSON + '; exit $workscopeExit'))) {
+        $response = Invoke-Captured $pwsh $Directory @('-NoProfile', '-NonInteractive', '-Command', $command)
+        Assert-Acceptance ($response.Code -eq $Code -and (Test-CommandStderr $response.Error $Code)) "PowerShellへ終了コード${Code}を引き継げません: $($response.Code) $($response.Error)"
+        $data = ConvertFrom-Json -InputObject $response.Text -AsHashtable
+        Assert-Acceptance ($data.status -ceq $Status -and $data.coverage.complete -eq ($Code -in @(0, 1))) 'PowerShell経由で判定または照合の完全性が変わりました。'
+    }
+    if ($Code -eq 2) {
+        # 案内を省いた呼び出しとの差を、同じ判定不能の入力で再現する。
+        foreach ($case in @(@{ Command = $call; Code = 1 }, @{ Command = $processJSON; Code = 0 })) {
+            $response = Invoke-Captured $pwsh $Directory @('-NoProfile', '-NonInteractive', '-Command', $case.Command)
+            $data = ConvertFrom-Json -InputObject $response.Text -AsHashtable
+            Assert-Acceptance ($response.Code -eq $case.Code -and $data.status -ceq 'unknown' -and
+                -not $data.coverage.complete -and (Test-CommandStderr $response.Error 2)) '引き継ぎがない場合のPowerShellの変換と、CLI自身の終了コード2の案内を確認できません。'
+        }
+    }
+}
+
 function Invoke-JSON([string] $Directory, [string[]] $Arguments, [int] $Code, [string] $Status) {
     $response = Invoke-Captured $executable $Directory ($Arguments + @('--json'))
-    Assert-Acceptance ($response.Code -eq $Code -and (Test-Progress $response.Error)) "終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
+    Assert-Acceptance ($response.Code -eq $Code -and (Test-CommandStderr $response.Error $Code)) "終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
     # Parseは後続のJSONや診断文も拒否する。ConvertFrom-Jsonだけで件数を判断しない。
     $document = [System.Text.Json.JsonDocument]::Parse($response.Text)
     try {
@@ -93,7 +131,7 @@ function Invoke-JSON([string] $Directory, [string[]] $Arguments, [int] $Code, [s
 
 function Invoke-Summary([string] $Directory, [string[]] $Arguments, [int] $Code, [string] $Status) {
     $response = Invoke-Captured $executable $Directory ($Arguments + @('--json-summary'))
-    Assert-Acceptance ($response.Code -eq $Code -and (Test-Progress $response.Error)) "要約の終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
+    Assert-Acceptance ($response.Code -eq $Code -and (Test-CommandStderr $response.Error $Code)) "要約の終了コードまたは標準エラーが不正です: $($response.Code) $($response.Error) $($response.Text)"
     $document = [System.Text.Json.JsonDocument]::Parse($response.Text)
     try {
         Assert-Acceptance ($document.RootElement.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) '要約がJSONオブジェクト1件ではありません。'
@@ -160,6 +198,9 @@ try {
             Assert-Acceptance ($response.Code -eq 0 -and $response.Error -eq '') 'バイナリ単体のヘルプを取得できません。'
             foreach ($needed in @('制限付き実行環境', '実行経路が使える場合だけ', '読み取り専用 check', '編集前の begin', 'status=recorded', 'baseline_id', '既存の開始記録は取り直さず', '停止', '編集後に作った記録で過去の変更を検証済みにしない', 'baseline_missing', 'パス文字列の一致で代用しない')) {
                 Assert-Acceptance ($response.Text.Contains($needed)) "バイナリ単体のヘルプに必要な手順がありません: $needed"
+            }
+            foreach ($needed in @('pwsh -NoProfile -NonInteractive -Command', '$workscopeExit = $LASTEXITCODE', 'exit $workscopeExit', '対話中は $LASTEXITCODE', 'coverage.complete', '標準エラーの診断を捨てず')) {
+                Assert-Acceptance ($response.Text.Contains($needed)) "バイナリ単体のヘルプにPowerShellの案内がありません: $needed"
             }
         }
         Assert-Acceptance (@(Get-ChildItem -LiteralPath $binaryOnly -Force).Count -eq 1) 'ヘルプが実行ファイル以外の状態を作成しました。'
@@ -248,7 +289,7 @@ public static class WorkscopeTrustAcceptance {
                             }
                             finally { $document.Dispose() }
                             $data = ConvertFrom-Json -InputObject $response.Text -AsHashtable
-                            Assert-Acceptance ($response.Error -eq '' -and $data.status -ceq 'unknown' -and $data.issues.Count -eq 1 -and
+                            Assert-Acceptance ((Test-CommandStderr $response.Error 2) -and $data.status -ceq 'unknown' -and $data.issues.Count -eq 1 -and
                                 $data.issues[0].code -ceq 'trust_repository_unreadable' -and $data.issues[0].ContainsKey('details') -eq $verbose) '参照不能のJSON・詳細指定が不正です。'
                             $message = $data.issues[0].message
                         }
@@ -309,7 +350,7 @@ public static class WorkscopeTrustAcceptance {
             }
             $text = Invoke-Captured $executable $subdirectory $diagnosticArgs
             Assert-Acceptance ($text.Code -eq 2) "$mode の空の保存先の通常表示で終了コードが不正です。"
-            Assert-Acceptance ($text.Text.Contains($message) -and (Test-Progress $text.Error)) "$mode の読み取り専用コマンドの診断がJSONと一致しません。"
+            Assert-Acceptance ($text.Text.Contains($message) -and (Test-CommandStderr $text.Error 2)) "$mode の読み取り専用コマンドの診断がJSONと一致しません。"
             Assert-Acceptance (@(Get-ChildItem -LiteralPath $statePath -Force -ErrorAction Stop).Count -eq 0) "$mode の拒否した空の保存先に書き込みました。"
         }
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory $false)) "$mode の空の保存先の拒否で対象・Git状態が変化しました。"
@@ -341,6 +382,9 @@ public static class WorkscopeTrustAcceptance {
         Assert-Acceptance ($recorded.Data.coverage.complete -and $recorded.Data.preexisting_changes.Count -eq 2) "$mode の開始前の変更または照合範囲が不正です。"
         $before = Get-ProtectedState $directory
         $unchanged = Invoke-JSON $subdirectory @('check') 0 'within_scope'
+        Assert-PowerShellExit $subdirectory @('check', '--json-summary', '--no-progress') 0 'within_scope'
+        Assert-PowerShellExit $subdirectory @('check', '--task', 'PowerShell確認用の未記録名', '--json-summary', '--no-progress') 2 'unknown'
+        Assert-PowerShellExit $subdirectory @('check', '--json', '--json-summary', '--no-progress') 64 'invalid_arguments'
         Assert-Acceptance ($unchanged.Data.changes_since_begin.Count -eq 0 -and $unchanged.Data.index_changes.Count -eq 0) "$mode の開始前の変更を開始後の変更と扱いました。"
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の変更なしの照合が既存状態を変更しました。"
 
@@ -409,6 +453,7 @@ public static class WorkscopeTrustAcceptance {
         Assert-Acceptance ($outside.Text -ceq $again.Text) "$mode の同一条件でJSONの並び順が変化しました。"
         Assert-Acceptance ($outside.Data.changes_since_begin.Count -eq 6 -and $outside.Data.index_changes.Count -eq 2 -and $outside.Data.out_of_scope_changes.Count -eq 4) "$mode の再編集・範囲外・インデックスの集計が不正です。"
         $outsideSummary = Invoke-Summary $subdirectory @('check') 1 'out_of_scope'
+        Assert-PowerShellExit $subdirectory @('check', '--json-summary', '--no-progress') 1 'out_of_scope'
         Assert-Acceptance ($outsideSummary.Data.baseline_id -ceq $outside.Data.baseline_id -and
             $outsideSummary.Data.counts.changes_since_begin -eq 6 -and
             $outsideSummary.Data.counts.index_changes -eq 2 -and

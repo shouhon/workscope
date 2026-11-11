@@ -133,7 +133,7 @@ func TestGitUnavailableOutputAndExitCodes(t *testing.T) {
 								t.Fatal(err)
 							}
 							wantCode := map[string]string{"permission": "git_permission_denied", "not_found": "git_not_found", "startup": "git_start_failed"}[failure]
-							if decoder.Decode(new(any)) != io.EOF || !validProgress(stderr.String()) || result.Status != "unknown" || result.Command != command || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Code != wantCode || (result.Issues[0].Details != "") != verbose {
+							if decoder.Decode(new(any)) != io.EOF || !validCommandStderr(stderr.String(), 2) || result.Status != "unknown" || result.Command != command || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Code != wantCode || (result.Issues[0].Details != "") != verbose {
 								t.Fatalf("%v のJSON契約が不正: %+v / %s", args, result, &stderr)
 							}
 							text = result.Issues[0].Message + result.Issues[0].Details
@@ -143,8 +143,8 @@ func TestGitUnavailableOutputAndExitCodes(t *testing.T) {
 							}
 							text = stderr.String()
 						} else {
-							if !validProgress(stderr.String()) {
-								t.Fatal("checkの結果以外に診断を出力しています")
+							if !validCommandStderr(stderr.String(), 2) {
+								t.Fatal("進捗と判定不能の案内以外に診断を出力しています")
 							}
 							text = stdout.String()
 						}
@@ -199,7 +199,7 @@ func TestGitUnavailableOutputAndExitCodes(t *testing.T) {
 			stderr.Reset()
 			code := cli.Run(args, &stdout, &stderr)
 			var result baseline.Result
-			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != 2 || result.Status != "unknown" || len(result.Issues) != 1 || result.Issues[0].Code != "git_permission_denied" || !validProgress(stderr.String()) {
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || code != 2 || result.Status != "unknown" || len(result.Issues) != 1 || result.Issues[0].Code != "git_permission_denied" || !validCommandStderr(stderr.String(), 2) {
 				t.Fatalf("HEAD確認失敗の出力契約が不正: %d %s / %s / %v", code, &stdout, &stderr, err)
 			}
 			for _, want := range []string{"git rev-parse --verify HEAD", "git symbolic-ref -q HEAD", "permission denied", "Gitの終了コード: 1"} {
@@ -266,7 +266,7 @@ func TestOwnershipDiagnosticExplainsDirectGitDifference(t *testing.T) {
 				callArgs = append(callArgs, "--verbose")
 			}
 			var stdout, stderr bytes.Buffer
-			if code := cli.Run(callArgs, &stdout, &stderr); code != 2 || !validProgress(stderr.String()) {
+			if code := cli.Run(callArgs, &stdout, &stderr); code != 2 || !validCommandStderr(stderr.String(), 2) {
 				t.Fatalf("所有権の失敗契約が不正: %d %s / %s", code, &stdout, &stderr)
 			}
 			var result baseline.Result
