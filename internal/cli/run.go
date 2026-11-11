@@ -23,7 +23,7 @@ const help = `workscope - 作業開始後の変更が許容範囲内か照合す
   workscope begin --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
   workscope begin --replace --allow <対象> [--allow <対象> ...] [--task <名前>] [--json | --json-summary]
   workscope begin --extend --allow <追加対象> --reason <理由> [--task <名前>] [--json | --json-summary]
-  workscope check [--json | --json-summary] [--task <名前>]
+  workscope check [--json | --json-summary] [--task <名前>] [--include-ignored <ファイル> ...]
   begin / check の共通指定: [--trust-repository <Gitルートの絶対パス>] [--verbose] [--no-progress]
 
 記録する照合範囲:
@@ -48,6 +48,8 @@ begin --extend は開始状態を保って許容パスを追加する。--reason
 これから作るパスも指定できる。パスは現在地ではなくGitルートを基準にする。
 check は開始前の変更と開始後の内容・種類・インデックスの変化を分けて表示する。
 check は開始記録を更新しない。ディレクトリと未作成の許容パスは配下を含む。
+check --include-ignored <ファイル> は、開始後に無視対象となった記録済みファイルを明示して再照合する。
+複数件は繰り返し指定し、ディレクトリ全体や未記録の無視対象は探索しない。詳しくは check --help。
 list は保存済みの開始記録を一覧する。現在の変更の照合は check で行う。
 終了コード: 0=記録成功・範囲外の変更なし、1=範囲外の変更あり、2=判定不能、64=引数の誤り。
 begin は記録成功で0、記録不能で2、引数の誤りで64を返す。1はcheckの範囲外検出だけに使う。
@@ -113,6 +115,7 @@ const checkHelp = `workscope check - 開始記録と現在の状態を照合す�
 
 使い方:
   workscope check [--task <名前>] [--json | --json-summary] [--trust-repository <Gitルートの絶対パス>] [--verbose] [--no-progress]
+                  [--include-ignored <ファイル> ...]
   workscope check --help / -h
 
 引数:
@@ -124,16 +127,26 @@ const checkHelp = `workscope check - 開始記録と現在の状態を照合す�
                   begin の指定は保存されないため、check でも指定する。
   --verbose      Git診断の詳細を表示する。--json では issues[].details に含める。
   --no-progress  定期的な進捗と終了時の進捗だけを省略する。診断は維持する。
+  --include-ignored <ファイル>  開始後に無視対象となった記録済みファイルも、この実行だけ照合する。
+                  Gitルート相対パスを1件ずつ指定する。繰り返し指定・=形式も使える。
 
 使用例:
   workscope check
   workscope check --task '文書修正' --json
   workscope check --task '機能追加' --json-summary
   workscope check --trust-repository 'D:\作業\対象プロジェクト' --verbose
+  workscope check --task '除外設定' --include-ignored '.playwright-mcp/example.log' --json-summary --no-progress
 
 開始前からある変更と開始後の変化、インデックスの変化を分けて表示する。
 後から許容パスを追加した記録では、当初の許容範囲と追加履歴も示す。
 開始記録・対象ファイル・Git設定を更新しない。--allow と --replace は指定できない。
+無視対象へ変わった記録済みファイルは、既定では coverage_changed・判定不能にする。
+--include-ignored は選択した記録にハッシュがあるファイル・リンクだけを再照合する。
+ディレクトリ全体・未記録の対象・ワイルドカード・ルート外・管理領域は指定できない。
+無視された配下は探索せず、リンク先の内容も読まない。リンクは参照先の文字列だけを照合する。
+内容・種類・削除の差分と許容外の変更を報告し、読取不能や親リンクは判定不能のままにする。
+開始記録のID・日時・ハッシュ・許容範囲は保持する。begin --replace で取り直す必要はない。
+両JSONの coverage.ignored_baseline_paths に明示したパスを返す。指定は次のcheckには引き継がない。
 長い処理の進捗は標準エラーへ表示し、JSONには混ぜない。
 要約の未確認の総件数はnullとし、確認できた変更件数は observed_counts に下限として示す。
 終了コード: 0=範囲外の変更なし、1=範囲外の変更あり、2=判定不能、64=引数の誤り。
@@ -183,6 +196,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	task, taskSet := "", false
 	trust, trustSet, verbose, noProgress := "", false, false, false
+	includeIgnored := []string{}
 	var argumentError string
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; {
@@ -193,6 +207,21 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 			verbose = true
 		case arg == "--no-progress":
 			noProgress = true
+		case arg == "--include-ignored", strings.HasPrefix(arg, "--include-ignored="):
+			name := strings.TrimPrefix(arg, "--include-ignored=")
+			if arg == "--include-ignored" {
+				if i+1 == len(args) || strings.HasPrefix(args[i+1], "--") {
+					argumentError = "--include-ignored のファイルがありません。"
+					break
+				}
+				i++
+				name = args[i]
+			}
+			if name == "" {
+				argumentError = "--include-ignored のファイルがありません。"
+				break
+			}
+			includeIgnored = append(includeIgnored, name)
 		case arg == "--trust-repository", strings.HasPrefix(arg, "--trust-repository="):
 			if trustSet {
 				argumentError = "--trust-repository は1つだけ指定してください。"
@@ -253,7 +282,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		result.Issues = append(result.Issues, baseline.Issue{Code: "cwd_unavailable", Message: "現在の作業ディレクトリを確認できません。"})
 	} else {
 		result, code = withProgress(stderr, noProgress, func(observer baseline.Observer) (baseline.Result, int) {
-			return baseline.CheckWithOptions(dir, task, baseline.Options{TrustRepository: trust}, observer)
+			return baseline.CheckWithOptions(dir, task, baseline.Options{TrustRepository: trust, IncludeIgnored: includeIgnored}, observer)
 		})
 	}
 	if code == 2 || code == 64 {
@@ -324,7 +353,16 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(&text, "  詳細:\n  %s\n", issue.Details)
 		}
 	}
-	text.WriteString("照合対象: 追跡中・無視されていない未追跡ファイル、リンク自体、インデックス。\n対象外: 無視された未追跡ファイル、Git管理領域、状態保存先、サブモジュールの内容。\n")
+	text.WriteString("照合対象: 追跡中・無視されていない未追跡ファイル、リンク自体、インデックス。\n")
+	if len(result.Coverage.IgnoredBaselinePaths) != 0 {
+		fmt.Fprintf(&text, "明示指定で照合に含める記録済みパス: %d件\n", len(result.Coverage.IgnoredBaselinePaths))
+		for _, name := range result.Coverage.IgnoredBaselinePaths {
+			fmt.Fprintf(&text, "  %q\n", name)
+		}
+		text.WriteString("対象外: 明示指定以外の無視された未追跡ファイル、Git管理領域、状態保存先、サブモジュールの内容。\n")
+	} else {
+		text.WriteString("対象外: 無視された未追跡ファイル、Git管理領域、状態保存先、サブモジュールの内容。\n")
+	}
 	if writeOutput(stdout, stderr, text.String()) != 0 {
 		return 2
 	}

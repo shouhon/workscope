@@ -15,13 +15,15 @@ type Options struct {
 	TrustRepository string
 	Extend          bool
 	Reason          string
+	IncludeIgnored  []string
 }
 
 type Coverage struct {
-	Included   []string `json:"included"`
-	Excluded   []string `json:"excluded"`
-	Submodules []string `json:"submodules"`
-	Complete   bool     `json:"complete"`
+	Included             []string `json:"included"`
+	Excluded             []string `json:"excluded"`
+	Submodules           []string `json:"submodules"`
+	Complete             bool     `json:"complete"`
+	IgnoredBaselinePaths []string `json:"ignored_baseline_paths,omitempty"`
 }
 
 func DefaultCoverage() Coverage {

@@ -158,7 +158,7 @@ function Invoke-Summary([string] $Directory, [string[]] $Arguments, [int] $Code,
 }
 
 function Get-ProtectedState([string] $Directory, [bool] $IncludeBaseline = $true) {
-    $paths = @('config.toml', '.gitignore', 'Src/変更 日本語.txt', 'Src/削除.txt', 'Src/追加 日本語.txt', 'Src2/別.txt', 'index-only.txt', '未追跡 空白.txt', '新規/配下/追加.txt', 'ignored/hidden.txt', '.git') |
+    $paths = @('config.toml', '.gitignore', 'Src/変更 日本語.txt', 'Src/削除.txt', 'Src/追加 日本語.txt', 'Src2/別.txt', 'index-only.txt', '未追跡 空白.txt', '新規/配下/追加.txt', 'ignored/hidden.txt', '.playwright-mcp/first.log', '.playwright-mcp/second.log', '.playwright-mcp/new.secret', '.git') |
         ForEach-Object { Join-Path $Directory $_ }
     $index = Invoke-FixtureGit $Directory @('rev-parse', '--path-format=absolute', '--git-path', 'index')
     $gitDirectory = Invoke-FixtureGit $Directory @('rev-parse', '--absolute-git-dir')
@@ -595,6 +595,74 @@ public static class WorkscopeTrustAcceptance {
         Assert-Acceptance ($response.Code -eq 1 -and $response.Text.Contains('許容範囲の追加履歴: 2件') -and
             $response.Text.Contains('追加時にすでに変更があったパス: 1件') -and
             $before -ceq (Get-ProtectedState $directory)) "$mode の履歴表示か照合の非破壊性が不正です。"
+
+        # 開始後に除外した既知ファイルだけを、開始記録を保って再照合する。
+        Write-Fixture $directory '.playwright-mcp/first.log' '開始時のログ'
+        Write-Fixture $directory '.playwright-mcp/second.log' '開始時のログ'
+        $ignoreTask = '除外設定の照合'
+        $ignoredStart = Invoke-JSON $subdirectory @('begin', '--task', $ignoreTask, '--allow', '.gitignore',
+            '--allow', '.playwright-mcp/first.log', '--no-progress') 0 'recorded'
+        $ignoreText = [System.IO.File]::ReadAllText((Join-Path $directory '.gitignore'))
+        Write-Fixture $directory '.gitignore' ($ignoreText + "`n/.playwright-mcp/`n")
+        $null = Invoke-FixtureGit $directory @('add', '.gitignore')
+        Write-Fixture $directory '.playwright-mcp/new.secret' '開始記録にない無視対象'
+        $before = Get-ProtectedState $directory
+        $ignoredDefault = Invoke-Summary $subdirectory @('check', '--task', $ignoreTask, '--no-progress') 2 'unknown'
+        Assert-Acceptance ($ignoredDefault.Data.issues.Count -eq 2 -and
+            $ignoredDefault.Data.issues[0].code -ceq 'coverage_changed' -and
+            $ignoredDefault.Data.issues[0].message.Contains('check --include-ignored') -and
+            $ignoredDefault.Data.issues[0].message.Contains('workscope check --help')) "$mode の既定の保護か再照合の案内がありません。"
+        $partial = Invoke-JSON $subdirectory @('check', '--task', $ignoreTask, '--include-ignored',
+            '.playwright-mcp/first.log', '--no-progress') 2 'unknown'
+        Assert-Acceptance ($partial.Data.issues.Count -eq 1 -and
+            $partial.Data.issues[0].path -ceq '.playwright-mcp/second.log') "$mode で未指定の既知ファイルを読み取りました。"
+        $ignoredArguments = @('check', '--task', $ignoreTask, '--include-ignored', '.playwright-mcp/first.log',
+            '--include-ignored=.playwright-mcp/second.log', '--no-progress')
+        $newLock = [System.IO.File]::Open((Join-Path $directory '.playwright-mcp/new.secret'), 'Open', 'Read', 'None')
+        try {
+            $included = Invoke-JSON $subdirectory $ignoredArguments 0 'within_scope'
+            $includedSummary = Invoke-Summary $subdirectory $ignoredArguments 0 'within_scope'
+        }
+        finally { $newLock.Dispose() }
+        Assert-Acceptance ($included.Data.baseline_id -ceq $ignoredStart.Data.baseline_id -and
+            $included.Data.coverage.ignored_baseline_paths.Count -eq 2 -and
+            $included.Data.changes_since_begin.Count -eq 1 -and $included.Data.index_changes.Count -eq 1 -and
+            $includedSummary.Data.counts.out_of_scope_changes -eq 0 -and
+            $before -ceq (Get-ProtectedState $directory)) "$mode の不変な除外済みファイルの照合か状態保持が不正です。"
+        $includedText = Invoke-Captured $executable $subdirectory $ignoredArguments
+        Assert-Acceptance ($includedText.Code -eq 0 -and $includedText.Error -eq '' -and
+            $includedText.Text.Contains('明示指定で照合に含める記録済みパス: 2件')) "$mode の通常表示に明示した範囲がありません。"
+        Write-Fixture $directory '.playwright-mcp/first.log' '許容範囲内の変更'
+        $changedIgnored = Invoke-JSON $subdirectory $ignoredArguments 0 'within_scope'
+        Assert-Acceptance ($changedIgnored.Data.changes_since_begin.Count -eq 2 -and
+            $changedIgnored.Data.changes_since_begin[1].path -ceq '.playwright-mcp/first.log' -and
+            $changedIgnored.Data.changes_since_begin[1].kind -ceq 'modified') "$mode の除外後の内容変更を検出できません。"
+        Write-Fixture $directory '.playwright-mcp/second.log' '許容外の変更'
+        $before = Get-ProtectedState $directory
+        $outsideIgnored = Invoke-JSON $subdirectory $ignoredArguments 1 'out_of_scope'
+        Assert-Acceptance ($outsideIgnored.Data.out_of_scope_changes.Count -eq 1 -and
+            $outsideIgnored.Data.out_of_scope_changes[0].path -ceq '.playwright-mcp/second.log') "$mode の許容外の既知ファイルの変更を隠しました。"
+        $knownLock = [System.IO.File]::Open((Join-Path $directory '.playwright-mcp/first.log'), 'Open', 'Read', 'None')
+        try {
+            $unreadableIgnored = Invoke-Summary $subdirectory $ignoredArguments 2 'unknown'
+            Assert-Acceptance ($unreadableIgnored.Data.issues[0].code -ceq 'unreadable_path' -and
+                $unreadableIgnored.Data.observed_counts.out_of_scope_changes -eq 1) "$mode の読取不能か別の範囲外変更の保持が不正です。"
+        }
+        finally { $knownLock.Dispose() }
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の明示照合が開始記録やGit状態を変更しました。"
+        Remove-Item -LiteralPath (Join-Path $directory '.playwright-mcp/first.log')
+        Write-Fixture $directory '.playwright-mcp/first.log/new.secret' '種類変更で生じた配下は対象外'
+        $typedIgnored = Invoke-JSON $subdirectory $ignoredArguments 1 'out_of_scope'
+        Assert-Acceptance ($typedIgnored.Data.changes_since_begin.Count -eq 3 -and
+            $typedIgnored.Data.changes_since_begin[1].kind -ceq 'type_changed' -and
+            $typedIgnored.Data.changes_since_begin[1].after_kind -ceq 'directory') "$mode の種類変更で対象を配下へ広げました。"
+        foreach ($invalidIgnored in @('.playwright-mcp', '.playwright-mcp/new.secret', '.git/HEAD')) {
+            $null = Invoke-JSON $subdirectory @('check', '--task', $ignoreTask, '--include-ignored', $invalidIgnored, '--no-progress') 64 'invalid_arguments'
+        }
+        $ignoredHelp = Invoke-Captured $binaryExecutable $binaryOnly @('check', '--help')
+        Assert-Acceptance ($ignoredHelp.Code -eq 0 -and $ignoredHelp.Text.Contains('--include-ignored') -and
+            $ignoredHelp.Text.Contains('ディレクトリ全体・未記録の対象') -and
+            $ignoredHelp.Text.Contains('開始記録のID・日時・ハッシュ・許容範囲は保持')) '実行ファイルだけで明示照合の手順と制約を取得できません。'
 
         Write-Fixture $directory '.workscope/baseline.json' '{'
         $before = Get-ProtectedState $directory

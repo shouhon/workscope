@@ -13,7 +13,7 @@ func Check(dir, task string, observers ...Observer) (Result, int) {
 	return CheckWithOptions(dir, task, Options{}, observers...)
 }
 
-// CheckWithOptions は今回だけのGit設定で照合し、開始記録や設定には書き込まない。
+// CheckWithOptions は今回だけの指定で照合し、開始記録や設定には書き込まない。
 func CheckWithOptions(dir, task string, options Options, observers ...Observer) (Result, int) {
 	result := NewResult()
 	result.Command = "check"
@@ -49,6 +49,16 @@ func CheckWithOptions(dir, task string, options Options, observers ...Observer) 
 		result.PreexistingChanges = record.PreexistingChanges
 		result.InitialAllow = record.InitialAllow
 		result.ScopeExtensions = record.ScopeExtensions
+		included, err := r.includeIgnoredPaths(options.IncludeIgnored, record.Files)
+		if err != nil {
+			return err
+		}
+		r.options.IncludeIgnored = included
+		if len(included) != 0 {
+			result.Coverage.IgnoredBaselinePaths = included
+			result.Coverage.Included = append(result.Coverage.Included, "explicit_ignored_baseline_paths")
+			result.Coverage.Excluded[0] = "other_ignored_untracked_files"
+		}
 		current, err := r.stableSnapshot(record.Files)
 		if current.Submodules != nil {
 			result.Coverage.Submodules = current.Submodules

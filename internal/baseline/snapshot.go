@@ -134,10 +134,14 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 	if err != nil {
 		return s, err
 	}
-	// 記録済みの対象の削除を確認する。無視対象へ変わった場合は本文を開かない。
+	includeIgnored := map[string]bool{}
+	for _, name := range r.options.IncludeIgnored {
+		includeIgnored[pathKey(name)] = true
+	}
+	// 無視対象の再照合は明示された記録済みパスだけに限り、配下の探索はしない。
 	for _, entry := range previous {
-		if ignoredPrevious[entry.Path] {
-			s.Issues = append(s.Issues, Issue{Code: "coverage_changed", Message: "開始時の対象が無視された未追跡パスへ変わったため、内容を照合しません。", Path: entry.Path})
+		if ignoredPrevious[entry.Path] && !includeIgnored[pathKey(entry.Path)] {
+			s.Issues = append(s.Issues, Issue{Code: "coverage_changed", Message: "開始時の対象が無視された未追跡パスへ変わったため、内容を照合しません。この対象だけを再照合する場合は、同じタスクで check --include-ignored <このファイルのルート相対パス> を指定してください。複数件は繰り返し指定でき、開始記録は更新しません。詳しくは workscope check --help を確認してください。", Path: entry.Path})
 			continue
 		}
 		if !inSubmodule(entry.Path) {

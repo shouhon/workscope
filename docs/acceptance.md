@@ -2,6 +2,24 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## 無視対象になった記録済みファイルの明示照合（2026-11-11、Issue #11）
+
+[Issue #11](https://github.com/shouhon/workscope/issues/11)に対応し、`check --include-ignored <ファイル>` を追加した。CLI版は機能追加として `0.11.2` から `0.12.0` へ更新した。未指定時の保護と保存形式を維持し、開始記録の更新を伴わず、記録済みパスだけを再照合する。
+
+- 基点は `7d0d5ad8853596cef6fb292401ffcea7cb7cd9de`。`checkstamp run --label issue-11-final --input cmd --input internal --input scripts --input go.mod --input .github --input AGENTS.md --input .gitignore --input README.md --input docs/requirements.md --input docs/usage.md --input docs/architecture.md --json-summary -- pwsh -NoProfile -File ./scripts/package.ps1` が成功した。実行IDは `96dd9f2518877ba9515873090b3af3ba`。結果採用時の同じ作業ディレクトリでの `checkstamp status` は `valid`・終了コード0・現在の入力の変更0件だった。この結果を書く受入・開発計画文書は検証入力に含めず、差分と参照を別に確認した。
+- `package.ps1` 内の必須検証で、整形、`go vet`、全Goテスト、Windowsビルド、総合・個別ヘルプ、通常・worktreeの受入確認、Releaseの判定・公開保護の検査が成功した。ZIP、Scoop定義、SHA-256一覧もローカルへ作成した。版表示は正本と同じ `workscope 0.12.0`、ローカル実行ファイルのSHA-256は `D4C508EE3B974CB7D3DAFD90A1E2DA073798CD939255C5A64B11825FC47241F9`。
+- 通常・詳細JSON・要約JSONで、明示したパスと終了コードを確認した。`coverage_changed` の診断から追加指定とヘルプへ到達し、実行ファイルだけの環境でも使い方と制約を取得できた。指定が次回へ永続化されないこと、開始記録のバイト列、対象、インデックス、共通Git設定が不変であることも確認した。
+- `TestIncludeIgnoredDoesNotFollowReplacedParentLink` と `TestIncludeIgnoredRejectsChangesBetweenSnapshots` は追加の詳細表示でも実行し、権限による省略なしで成功した。読み取り専用の補助担当が本体差分と保護経路を独立点検し、重大な不具合・要件逸脱は見つからなかった。実行検証と最終判断は主担当による。
+- 変更した要件・利用手順・構成文書のローカルリンクと見出し参照を `lychee --offline --include-fragments --no-progress` で検査し、エラー0件だった。外部依存は追加していない。
+
+| 受入条件 | 確認箇所と結果 |
+| --- | --- |
+| 除外後も不変 | `TestIncludeIgnoredComparesKnownFilesWithoutUpdatingBaseline` と通常・worktreeの実行ファイルで、作業ファイルとインデックスの `.gitignore` 差分だけを報告し0 |
+| 除外と同時の内容変更・許容外の既知ファイル | 同テスト、`TestIncludeIgnoredCLIFormatsAndScope`、受入スクリプトで本文の差分を検出。許容内は0、許容外は1 |
+| 未指定・未記録の対象を読まない | `TestIncludeIgnoredDoesNotIncludeOtherKnownFiles`、Windowsテストと実行ファイルで新しい無視対象を排他ロックしたまま正常に照合。未指定の既知ファイルは引き続き2 |
+| 読取不能・種類変更・リンク・取得中の変化 | Windowsの排他ロックで2と別の範囲外変更を併記。ディレクトリへの種類変更は差分だけを報告し新しい配下を読まず、親リンクと取得中の変化は2 |
+| 不正指定と記録の保持 | 未記録・ディレクトリ全体・管理領域・ルート外などを64で拒否。複数指定・重複・Windowsの大小文字と区切り・下位ディレクトリからの起動を確認し、記録とGit状態を保持 |
+
 ## PowerShellの終了コードの案内（2026-11-11、Issue #10）
 
 [Issue #10](https://github.com/shouhon/workscope/issues/10)と利用者の追加依頼に対応し、利用ガイドだけでなく、判定不能時の実行結果と全体・各コマンドのヘルプへ案内を組み込んだ。表示の修正としてCLI版を `0.11.1` から `0.11.2` へ更新した。JSON・保存形式と終了コードの意味は維持する。
