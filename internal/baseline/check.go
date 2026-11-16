@@ -68,7 +68,7 @@ func CheckWithOptions(dir, task string, options Options, observers ...Observer) 
 		}
 		result.Issues = append(result.Issues, current.Issues...)
 		if current.Head != record.Head {
-			result.Issues = append(result.Issues, Issue{Code: "head_changed", Message: "開始時からHEADが変わったため、完全な照合はできません。"})
+			result.Issues = append(result.Issues, Issue{Code: "head_changed", Message: "開始時からHEADが変わったため、完全な照合はできません。完全な照合には開始時と同じHEADが必要です。通常はコミット前に最終の check を行ってください。開始記録を保持し、以前の照合結果を現在の状態の成功結果として扱わず、変更後のコミットと対象差分を別途確認してください。この実行では完全照合できていないことを残してください。編集後の begin --replace で、今回の変更を検証済みにしないでください。詳しくは workscope check --help を確認してください。"})
 		}
 		progress.stage("開始後の変更の照合")
 		result.compare(record, current)

@@ -17,6 +17,12 @@ function Assert-TrustRecoveryAdvice([string] $Text) {
     }
 }
 
+function Assert-HeadChangeAdvice([string] $Text) {
+    foreach ($needed in @('完全な照合には開始時と同じHEADが必要', 'コミット前に最終の check', '開始記録を保持', '以前の照合結果を現在の状態の成功結果として扱わ', 'コミットと対象差分を別途確認', 'この実行では完全照合できていない', '編集後の begin --replace')) {
+        Assert-Acceptance ($Text.Contains($needed)) "HEAD変更時の案内がありません: $needed"
+    }
+}
+
 function Invoke-Captured([string] $File, [string] $Directory, [string[]] $Arguments) {
     $start = [System.Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $File
@@ -202,6 +208,7 @@ try {
             foreach ($needed in @('pwsh -NoProfile -NonInteractive -Command', '$workscopeExit = $LASTEXITCODE', 'exit $workscopeExit', '対話中は $LASTEXITCODE', 'coverage.complete', '標準エラーの診断を捨てず')) {
                 Assert-Acceptance ($response.Text.Contains($needed)) "バイナリ単体のヘルプにPowerShellの案内がありません: $needed"
             }
+            if ($arguments[0] -ceq 'check') { Assert-HeadChangeAdvice $response.Text }
         }
         Assert-Acceptance (@(Get-ChildItem -LiteralPath $binaryOnly -Force).Count -eq 1) 'ヘルプが実行ファイル以外の状態を作成しました。'
     }
@@ -468,14 +475,26 @@ public static class WorkscopeTrustAcceptance {
 
         $null = Invoke-FixtureGit $directory $commit
         $before = Get-ProtectedState $directory
-        $unknown = Invoke-JSON $subdirectory @('check') 2 'unknown'
-        Assert-Acceptance (-not $unknown.Data.coverage.complete -and 'head_changed' -cin $unknown.Data.issues.code -and $unknown.Data.out_of_scope_changes.Count -gt 0) "$mode の判定不能と範囲外の併記が不正です。"
-        $unknownSummary = Invoke-Summary $subdirectory @('check') 2 'unknown'
-        Assert-Acceptance ('head_changed' -cin $unknownSummary.Data.issues.code -and
-            $unknownSummary.Data.counts.preexisting_changes -eq 2 -and
-            $unknownSummary.Data.observed_counts.changes_since_begin -eq $unknown.Data.changes_since_begin.Count -and
-            $unknownSummary.Data.observed_counts.index_changes -eq $unknown.Data.index_changes.Count -and
-            $unknownSummary.Data.observed_counts.out_of_scope_changes -eq $unknown.Data.out_of_scope_changes.Count) "$mode の判定不能の要約で検出済みの件数が失われました。"
+        foreach ($noProgress in @($false, $true)) {
+            $headArguments = @('check')
+            if ($noProgress) { $headArguments += '--no-progress' }
+            $unknown = Invoke-JSON $subdirectory $headArguments 2 'unknown'
+            Assert-Acceptance (-not $unknown.Data.coverage.complete -and 'head_changed' -cin $unknown.Data.issues.code -and $unknown.Data.out_of_scope_changes.Count -gt 0) "$mode の判定不能と範囲外の併記が不正です。"
+            Assert-HeadChangeAdvice ($unknown.Data.issues | Where-Object code -CEQ 'head_changed').message
+            $unknownSummary = Invoke-Summary $subdirectory $headArguments 2 'unknown'
+            Assert-Acceptance ('head_changed' -cin $unknownSummary.Data.issues.code -and
+                $unknownSummary.Data.counts.preexisting_changes -eq 2 -and
+                $unknownSummary.Data.observed_counts.changes_since_begin -eq $unknown.Data.changes_since_begin.Count -and
+                $unknownSummary.Data.observed_counts.index_changes -eq $unknown.Data.index_changes.Count -and
+                $unknownSummary.Data.observed_counts.out_of_scope_changes -eq $unknown.Data.out_of_scope_changes.Count) "$mode の判定不能の要約で検出済みの件数が失われました。"
+            Assert-HeadChangeAdvice ($unknownSummary.Data.issues | Where-Object code -CEQ 'head_changed').message
+            $headText = Invoke-Captured $executable $subdirectory $headArguments
+            Assert-Acceptance ($headText.Code -eq 2 -and (Test-CommandStderr $headText.Error 2)) "$mode のHEAD変更時の通常表示が不正です。"
+            Assert-HeadChangeAdvice ($headText.Text + $headText.Error)
+            if ($noProgress) {
+                Assert-Acceptance (-not $headText.Error.Contains('進捗:')) "$mode の進捗省略が反映されません。"
+            }
+        }
         Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の判定不能時に既存状態を変更しました。"
 
         $before = Get-ProtectedState $directory $false

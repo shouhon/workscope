@@ -2,6 +2,16 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## HEAD変更時の照合タイミングと対処の案内（2026-11-16、Issue #12）
+
+[Issue #12](https://github.com/shouhon/workscope/issues/12)を採用し、`head_changed` の診断と `check --help`・`-h` に、コミット前の最終照合とHEAD変更後の確認方法を収録した。判定・保存の処理は変えず、表示の修正としてCLI版を `0.12.0` から `0.12.1` へ更新した。
+
+- 基点は `839c286df726e6c71e8ace4aef7e03a412ca7409`。`checkstamp` で入力を記録して `pwsh -NoProfile -File ./scripts/package.ps1` を実行し、成功した。実行IDは `a21f103de2d19013800b95dcafb6f484`。入力は `cmd`、`internal`、`scripts`、`go.mod`、`.github`、`AGENTS.md`、`.gitignore`、`README.md`、`docs/requirements.md`、`docs/usage.md`、`docs/architecture.md`。結果採用直前の同じ作業ディレクトリでの `checkstamp status` は `valid`・終了コード0・現在の入力の変更0件だった。この受入結果と開発計画の文書は検証入力に含めず、差分と参照を別に確認した。
+- 必須検証の整形、`go vet`、全Goテスト、Windowsビルド、版表示、総合・個別ヘルプ、通常・worktreeの受入確認、Release判定・公開保護の検査が成功した。ローカルのZIP、Scoop定義、SHA-256一覧を作成し、版表示が正本と同じ `workscope 0.12.1` であることを確認した。ローカル実行ファイルのSHA-256は `83283A16EA3B286EEE459E323C94AD12EC2E963D20654AFD3997ECED69791B63`。
+- `scripts/acceptance.ps1` で、同じ開始記録に対するコミット前の範囲内照合と、コミット後の `head_changed`・`unknown`・`coverage.complete=false`・終了コード2を確認した。要約の総件数 `null`、下限 `observed_counts`、検出済みの範囲外変更も維持した。
+- 通常表示・詳細JSON・要約JSONで、進捗表示の有無にかかわらず、開始時と同じHEADが必要であること、コミット前の最終照合、開始記録の保持、以前の結果を現在の成功結果として扱わないこと、コミットと対象差分の別途確認、後付けの取り直しの禁止を確認した。Git・文書・ソースがない実行ファイルだけの環境でも、両方のヘルプ指定から案内を取得できた。
+- JSONオブジェクト1件と標準エラーの分離を維持し、開始記録のバイト列、対象、実体側のインデックス、HEAD、共通Git設定が照合前後で不変であることを通常・worktreeで確認した。本体の差分と判定・保存・出力の経路は主担当が別の観点で点検し、独立評価は行っていない。外部依存は追加していない。
+
 ## 無視対象になった記録済みファイルの明示照合（2026-11-11、Issue #11）
 
 [Issue #11](https://github.com/shouhon/workscope/issues/11)に対応し、`check --include-ignored <ファイル>` を追加した。CLI版は機能追加として `0.11.2` から `0.12.0` へ更新した。未指定時の保護と保存形式を維持し、開始記録の更新を伴わず、記録済みパスだけを再照合する。
