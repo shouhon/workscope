@@ -316,3 +316,79 @@ func TestWindowsJunctionIsNeverTraversed(t *testing.T) {
 		t.Fatal("外部へつながるジャンクションがある状態で記録しました")
 	}
 }
+
+func TestWindowsUnreadableAllowIsUnknownForBeginAndExtend(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "locked/sub/validate.py", "開始時の本文")
+	testGit(t, dir, "add", "locked/sub/validate.py")
+	commit(t, dir)
+
+	lockedDir := filepath.Join(dir, "locked")
+	lockDirectory := func(t *testing.T) syscall.Handle {
+		t.Helper()
+		name, err := syscall.UTF16PtrFromString(lockedDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil,
+			syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return handle
+	}
+
+	assertUnreadable := func(t *testing.T, label string, result Result, code int) {
+		t.Helper()
+		if code != 2 || result.Status != "unknown" || result.Coverage.Complete || len(result.Issues) != 1 {
+			t.Fatalf("%s の読取不能が判定不能(2)ではありません: code=%d result=%+v", label, code, result)
+		}
+		issue := result.Issues[0]
+		if issue.Code != "unreadable_path" || (issue.Path != "locked" && issue.Path != "locked/sub") {
+			t.Fatalf("%s の問題コードまたは対象要素が不正です: %+v", label, issue)
+		}
+		for _, want := range []string{"失敗した確認段階:", "原因区分:", `対象要素: "` + issue.Path + `"`} {
+			if !strings.Contains(issue.Details, want) {
+				t.Fatalf("%s の詳細に %q がありません: %+v", label, want, issue)
+			}
+		}
+		for _, secret := range []string{dir, filepath.ToSlash(dir)} {
+			if strings.Contains(issue.Message+issue.Details, secret) {
+				t.Fatalf("%s の診断に絶対パスが漏れました: %+v", label, issue)
+			}
+		}
+	}
+
+	handle := lockDirectory(t)
+	beginResult, beginCode := Begin(dir, []string{"locked/sub/validate.py"}, false, "")
+	invalidResult, invalidCode := Begin(dir, []string{"../outside"}, false, "")
+	if err := syscall.CloseHandle(handle); err != nil {
+		t.Fatal(err)
+	}
+	assertUnreadable(t, "begin", beginResult, beginCode)
+	if invalidCode != 64 || invalidResult.Status != "invalid_arguments" || len(invalidResult.Issues) != 1 || invalidResult.Issues[0].Code != "invalid_allow" {
+		t.Fatalf("形式不正の拒否が変わりました: %d %+v", invalidCode, invalidResult)
+	}
+	if _, err := os.Stat(filepath.Join(dir, stateName)); !os.IsNotExist(err) {
+		t.Fatal("許容対象の参照失敗で状態保存先を作成しました")
+	}
+
+	if result, code := Begin(dir, []string{"tracked.txt"}, false, ""); code != 0 {
+		t.Fatalf("準備失敗: %d %+v", code, result)
+	}
+	before := taskData(t, dir, "")
+
+	handle = lockDirectory(t)
+	extendResult, extendCode := BeginWithOptions(dir, []string{"locked/sub/validate.py"}, false, "", Options{Extend: true, Reason: "追加依頼"})
+	extendInvalidResult, extendInvalidCode := BeginWithOptions(dir, []string{".git/config"}, false, "", Options{Extend: true, Reason: "追加依頼"})
+	if err := syscall.CloseHandle(handle); err != nil {
+		t.Fatal(err)
+	}
+	assertUnreadable(t, "begin --extend", extendResult, extendCode)
+	if extendInvalidCode != 64 || extendInvalidResult.Status != "invalid_arguments" || len(extendInvalidResult.Issues) != 1 || extendInvalidResult.Issues[0].Code != "invalid_allow" {
+		t.Fatalf("extendの禁止領域の拒否が変わりました: %d %+v", extendInvalidCode, extendInvalidResult)
+	}
+	if !bytes.Equal(before, taskData(t, dir, "")) {
+		t.Fatal("extendの参照失敗で既存の開始記録を変更しました")
+	}
+}

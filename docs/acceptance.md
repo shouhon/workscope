@@ -2,6 +2,16 @@
 
 [要件定義書の受入条件](requirements.md#6-受入条件)を、Goの自動テストとビルド済み実行ファイルの確認へ対応付ける。要件文書は元の定義を保持し、開発状況は[開発計画](development-plan.md)で管理する。
 
+## 許容パスの参照失敗と引数誤りの分離（2026-11-19、Issue #13）
+
+[Issue #13](https://github.com/shouhon/workscope/issues/13)を採用し、`begin`・`begin --extend` の `--allow` 確認で、形式不正・禁止領域・リンクやファイル配下（`invalid_allow`・64）と、`Lstat`（`fs.ErrNotExist` 以外）・実名取得の参照失敗（`unreadable_path`・2）を分離した。機械判定用コードと終了コードの分類変更により、CLI版を `0.12.1` から `0.13.0` へ更新した。保存・JSON形式（`schema_version: 1`）と未作成パス（`future`）の扱い、既存記録と保護境界は維持する。
+
+- 基点は `27934035a85661a6c4ad96d5d92fbe0a80d44b23`。`checkstamp` で入力を記録して `pwsh -NoProfile -File ./scripts/package.ps1` を実行し、成功した。実行IDは `2cca308d43f8f74bf051a8f5fd577f3f`。入力は `cmd`、`internal`、`scripts`、`go.mod`、`.github`、`AGENTS.md`、`.gitignore`、`README.md`、`docs/requirements.md`、`docs/usage.md`、`docs/architecture.md`。結果採用直前の同じ作業ディレクトリでの `checkstamp status` は `valid`・終了コード0・実行前後および現在の入力の差分0件だった。この受入結果と開発計画の文書は検証入力に含めず、差分と参照を別に確認した。
+- 必須検証の整形、`go vet`、全Goテスト、Windowsビルド、版表示、総合・個別ヘルプ、通常・worktreeの受入確認、Release判定・公開保護の検査が成功した。ローカルのZIP、Scoop定義、SHA-256一覧を作成し、版表示が正本と同じ `workscope 0.13.0` であることを確認した。ローカル実行ファイルのSHA-256は `0CDEF7CF15B97430FC22EEEA772495476619470D984B2FBAB45C28BF83E2FD7F`。
+- `TestUnreadableAllowFailuresAreSafeAndClassified` と `TestNormalizeAllowActualNameFailureIsUnknown` で、権限拒否・確認中の消失・原因未確認のエラーに対して `unreadable_path`・終了コード2・確認段階・原因区分・ルート相対要素が返り、生の絶対パスとOSエラー本文が漏れないことを確認した。
+- `TestWindowsUnreadableAllowIsUnknownForBeginAndExtend`、`TestWindowsCLIUnreadableAllowDiagnosticsAndModesPreserveState`、`scripts/acceptance.ps1`（通常リポジトリ・worktree）で、実在パスの親ディレクトリを共有制限した状態での `begin`・`begin --extend` が、通常表示・詳細JSON・要約JSONと `--verbose` 有無にかかわらず `unknown`・`unreadable_path`・終了コード2になることを確認した。失敗したパス要素、終了コード2のPowerShell案内、単一JSON、形式不正の64（`invalid_allow`）、状態保存先・開始記録・対象・インデックス・HEAD・Git設定の保持も確認した。
+- 読み取り専用の補助担当が本体差分・テスト・文書を独立点検し、重大な不具合・回帰・仕様逸脱はなかった。軽微な指摘（非Windowsでのテスト互換性とサブテスト名の明確化）を主担当が反映した上で、最終入力へ `checkstamp` 付き必須検証を実行した。元のサンドボックス環境でのOSエラー具体値自体は未確認であり、Windows上の共有制限による再現で参照不能の経路を確認している。外部依存は追加していない。
+
 ## HEAD変更時の照合タイミングと対処の案内（2026-11-16、Issue #12）
 
 [Issue #12](https://github.com/shouhon/workscope/issues/12)を採用し、`head_changed` の診断と `check --help`・`-h` に、コミット前の最終照合とHEAD変更後の確認方法を収録した。判定・保存の処理は変えず、表示の修正としてCLI版を `0.12.0` から `0.12.1` へ更新した。

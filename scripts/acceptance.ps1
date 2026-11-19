@@ -578,7 +578,47 @@ public static class WorkscopeTrustAcceptance {
         }
         finally { $recordHandle.Dispose() }
         $null = Invoke-JSON $subdirectory @('begin', '--extend', '--replace', '--allow', 'config.toml', '--reason', '追加') 64 'invalid_arguments'
-        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の拒否した範囲追加が既存状態を変更しました。"
+        # --allow のパス参照不能を引数誤り(64)と区別し、begin と begin --extend の両方で2・unreadable_pathにする。
+        $lockedAllowDir = Join-Path $directory 'Src2'
+        $allowLock = [WorkscopeTrustAcceptance]::CreateFileW($lockedAllowDir, [uint32]2147483648, 0, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+        try {
+            Assert-Acceptance (-not $allowLock.IsInvalid) "$mode の許容対象の参照不能を再現するハンドルを取得できません。"
+            foreach ($baseArgs in @(
+                @('begin', '--task', '参照不能確認', '--allow', 'Src2/別.txt', '--no-progress'),
+                @('begin', '--extend', '--task', '日本語 作業A', '--allow', 'Src2/別.txt', '--reason', '追加依頼', '--no-progress')
+            )) {
+                foreach ($verbose in @($false, $true)) {
+                    $runArgs = if ($verbose) { $baseArgs + @('--verbose') } else { $baseArgs }
+                    $detail = Invoke-JSON $subdirectory $runArgs 2 'unknown'
+                    $summary = Invoke-Summary $subdirectory $runArgs 2 'unknown'
+                    foreach ($result in @($detail.Data, $summary.Data)) {
+                        Assert-Acceptance (-not $result.coverage.complete -and $result.issues.Count -eq 1 -and
+                            $result.issues[0].code -ceq 'unreadable_path' -and
+                            ($result.issues[0].path -ceq 'Src2' -or $result.issues[0].path -ceq 'Src2/別.txt') -and
+                            $result.issues[0].ContainsKey('details') -eq $verbose) "$mode の --allow 参照不能のJSON診断が不正です。"
+                        $combined = $result.issues[0].message + $(if ($verbose) { $result.issues[0].details } else { '' })
+                        Assert-Acceptance (-not $combined.Contains($directory) -and -not $combined.Contains($directory.Replace('\', '/'))) "$mode の --allow 参照不能の診断に絶対パスが漏れました。"
+                        if ($verbose) {
+                            Assert-Acceptance ($result.issues[0].details.Contains('失敗した確認段階:') -and
+                                $result.issues[0].details.Contains('原因区分:') -and
+                                $result.issues[0].details.Contains('対象要素:')) "$mode の --allow 参照不能の詳細が不足しています。"
+                        }
+                    }
+                    $text = Invoke-Captured $executable $subdirectory $runArgs
+                    Assert-Acceptance ($text.Code -eq 2 -and $text.Text -eq '' -and
+                        $text.Error.Contains('許容対象のパスを確認できません') -and
+                        $text.Error.Contains('("Src2') -and
+                        $text.Error.Contains('workscope自身の終了コード: 2') -and
+                        $text.Error.Contains('失敗した確認段階:') -eq $verbose -and
+                        -not $text.Error.Contains($directory) -and
+                        -not $text.Error.Contains($directory.Replace('\', '/'))) "$mode の --allow 参照不能の通常表示が不正です。"
+                }
+            }
+            $invalidAllow = Invoke-JSON $subdirectory @('begin', '--task', '参照不能確認', '--allow', '../outside', '--no-progress') 64 'invalid_arguments'
+            Assert-Acceptance ($invalidAllow.Data.issues[0].code -ceq 'invalid_allow') "$mode の形式不正が invalid_allow ではありません。"
+        }
+        finally { $allowLock.Dispose() }
+        Assert-Acceptance ($before -ceq (Get-ProtectedState $directory)) "$mode の拒否した範囲追加・許容対象参照不能が既存状態を変更しました。"
 
         $before = Get-ProtectedState $directory $false
         $extended = Invoke-JSON $subdirectory @('begin', '--extend', '--task', '日本語 作業A',

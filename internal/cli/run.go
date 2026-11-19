@@ -84,7 +84,7 @@ const beginHelp = `workscope begin - 作業開始時の状態と許容範囲を�
   --json-summary  変更の明細を省き、判定・件数・問題をJSONで返す。--json と併用不可。
   --trust-repository <絶対パス>  信頼するGitルート1件を、この実行だけGitへ渡す。
                    所有者と内容を事前に確認する。恒久設定や開始記録には保存しない。
-  --verbose       Git診断の詳細を表示する。--json では issues[].details に含める。
+  --verbose       診断の詳細を表示する。--json では issues[].details に含める。
   --no-progress   定期的な進捗と終了時の進捗だけを省略する。診断は維持する。
 
 使用例:
@@ -515,7 +515,11 @@ func runBegin(args []string, stdout, stderr io.Writer) int {
 	}
 	if code != 0 {
 		for _, issue := range result.Issues {
-			fmt.Fprintln(stderr, issue.Message)
+			if issue.Path != "" {
+				fmt.Fprintf(stderr, "%s (%q)\n", issue.Message, issue.Path)
+			} else {
+				fmt.Fprintln(stderr, issue.Message)
+			}
 			if issue.Details != "" {
 				fmt.Fprintln(stderr, "詳細:\n"+issue.Details)
 			}

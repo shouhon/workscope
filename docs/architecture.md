@@ -50,7 +50,7 @@ Gitの管理領域は `rev-parse` で特定し、`.git` がディレクトリと
 
 追跡対象とインデックスは [`ls-files --stage -z`](https://git-scm.com/docs/git-ls-files) から取得する。未追跡対象はディレクトリを順に読み、`check-ignore --no-index -z --stdin` で無視された配下への進入を避ける。追跡済みの無視対象はインデックス側から別途取得する。`status` は未追跡走査・サブモジュール走査・名前変更推測を無効にする。名前変更は削除と追加として保存する。
 
-読み取りには標準ライブラリの [`os.Root`](https://pkg.go.dev/os#Root) を使い、各成分も `Lstat` で確認する。Windowsの実在する許容パスは [`GetLongPathNameW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getlongpathnamew) で実名へそろえ、ハードリンクの別名を取り違えない。リンク自体の参照先文字列をSHA-256へ変換し、リンク先は開かない。リンクや通常のディレクトリでない親の配下は判定不能とする。現在のGoで未対応の種類として表れるジャンクションも、走査せず判定不能にする。ファイルのハッシュは逐次計算する。
+読み取りには標準ライブラリの [`os.Root`](https://pkg.go.dev/os#Root) を使い、各成分も `Lstat` で確認する。Windowsの実在する許容パスは [`GetLongPathNameW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getlongpathnamew) で実名へそろえ、ハードリンクの別名を取り違えない。`normalizeAllow` では形式不正・禁止領域・リンクやファイル配下を `invalid_allow`（64）で拒否し、`Lstat` の `fs.ErrNotExist` 以外の失敗と実名取得の失敗は `unreadableAllow` により `unreadable_path`（2）へ分離する。診断には失敗したルート相対要素と安全な確認段階・原因区分だけを使い、生の絶対パスとOSエラー本文を含めない。リンク自体の参照先文字列をSHA-256へ変換し、リンク先は開かない。リンクや通常のディレクトリでない親の配下は判定不能とする。現在のGoで未対応の種類として表れるジャンクションも、走査せず判定不能にする。ファイルのハッシュは逐次計算する。
 
 対象全体を2回取得し、ファイルの種類・SHA-256、HEAD、インデックス、開始前の変更が一致することを確認する。各取得の前後にもHEAD・インデックスを比較し、読み取り中のファイルの実体・大きさ・更新日時を確認する。状態が取得後に変わることや、途中で変わって元に戻る操作の検出は保証しない。
 

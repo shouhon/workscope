@@ -2,6 +2,7 @@ package baseline
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -46,7 +47,28 @@ func (r *repository) protected(name string) bool {
 	return false
 }
 
+func unreadableAllow(stage, path string, err error) error {
+	cause := "未確認（参照エラーを安全に分類できません）"
+	advice := "対象の読取・参照権限、他プロセスの占有、実行環境の制限を確認してください。"
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		cause = "アクセス拒否"
+		advice = "対象と親ディレクトリの読取・参照権限、実行環境の制限を確認してください。"
+	case errors.Is(err, os.ErrNotExist):
+		cause = "確認中に参照先が存在しなくなった"
+		advice = "変更が止まってから再実行してください。"
+	}
+	// OSエラーの本文や絶対パスは含めず、確認できた段階・原因区分とルート相対要素だけを示す。
+	message := fmt.Sprintf("許容対象のパスを確認できません（%s、%s）。%s", stage, cause, advice)
+	details := fmt.Sprintf("失敗した確認段階: %s\n  原因区分: %s\n  対象要素: %q", stage, cause, path)
+	return &failure{issue: Issue{Code: "unreadable_path", Message: message, Path: path, Details: details}}
+}
+
 func (r *repository) normalizeAllow(names []string) ([]Allowed, error) {
+	return r.normalizeAllowWith(names, actualName)
+}
+
+func (r *repository) normalizeAllowWith(names []string, lookupActual func(string) (string, error)) ([]Allowed, error) {
 	allowed := []Allowed{}
 	for _, name := range names {
 		if name == "" || !utf8.ValidString(name) || strings.ContainsAny(name, "\x00*?[]") || !filepath.IsLocal(filepath.FromSlash(name)) || strings.Contains(name, ":") {
@@ -63,18 +85,18 @@ func (r *repository) normalizeAllow(names []string) ([]Allowed, error) {
 			candidate := filepath.ToSlash(filepath.Join(prefix, part))
 			info, err := r.fs.Lstat(candidate)
 			if errors.Is(err, fs.ErrNotExist) {
-				prefix = candidate
-				continue
+				prefix = filepath.ToSlash(filepath.Join(prefix, strings.Join(parts[i:], "/")))
+				break
 			}
 			if err != nil {
-				return nil, invalid("許容対象のパスを確認できません。", name)
-			}
-			// 実在するパスの実名を取得する。リンク先やハードリンクの別名へ置き換えない。
-			actual, err := actualName(filepath.Join(r.root, filepath.FromSlash(candidate)))
-			if err != nil {
-				return nil, invalid("許容対象の実名を確認できません。", name)
+				return nil, unreadableAllow("許容対象のパス参照", candidate, err)
 			}
 			if part != "." {
+				// 実在するパスの実名を取得する。リンク先やハードリンクの別名へ置き換えない。
+				actual, err := lookupActual(filepath.Join(r.root, filepath.FromSlash(candidate)))
+				if err != nil {
+					return nil, unreadableAllow("許容対象の実名確認", candidate, err)
+				}
 				candidate = filepath.ToSlash(filepath.Join(prefix, actual))
 			}
 			if r.protected(candidate) {
