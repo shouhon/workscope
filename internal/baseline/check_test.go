@@ -167,6 +167,44 @@ func TestCheckUnknownAndOutOfScopeCoexist(t *testing.T) {
 	}
 }
 
+func TestCheckRejectsSameLengthBaselineReplacement(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "outside.txt", "開始前からある別ファイル")
+	beginForCheck(t, dir, "tracked.txt")
+	record, original := readRecord(t, dir)
+	record.Allow[0].Path = "outside.txt"
+	replacement, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement = append(replacement, '\n')
+	if bytes.Equal(replacement, original) || len(replacement) != len(original) {
+		t.Fatal("同じ長さで許容範囲が異なる開始記録を用意できません")
+	}
+	write(t, dir, "tracked.txt", "開始後に変更した内容")
+	replaced := false
+	result, code := Check(dir, "", func(p Progress) {
+		if p.Stage == "開始記録の再確認" && !replaced {
+			write(t, dir, filepath.Join(stateName, recordName), string(replacement))
+			replaced = true
+		}
+	})
+	if !replaced {
+		t.Fatal("照合中の差し替えを再現できません")
+	}
+	if code != 2 || result.Status != "unknown" || result.Coverage.Complete || len(result.Issues) != 1 || result.Issues[0].Code != "baseline_changed" {
+		t.Fatalf("照合中の開始記録変更を判定不能にできません: 終了コード=%d、判定=%s、完全=%t、診断=%v", code, result.Status, result.Coverage.Complete, result.Issues)
+	}
+	_, current := readRecord(t, dir)
+	if !bytes.Equal(current, replacement) {
+		t.Fatal("照合が差し替え後の開始記録を書き換えました")
+	}
+	result, code = Check(dir, "")
+	if code != 1 || result.Status != "out_of_scope" || !result.Coverage.Complete || len(result.OutOfScopeChanges) != 1 {
+		t.Fatalf("差し替えた開始記録を有効な記録として読めません: 終了コード=%d、判定=%s、診断=%v", code, result.Status, result.Issues)
+	}
+}
+
 func TestCheckRejectsMissingAndInvalidBaseline(t *testing.T) {
 	dir := repo(t)
 	result, code := Check(dir, "")
