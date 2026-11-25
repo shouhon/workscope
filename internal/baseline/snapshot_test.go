@@ -18,7 +18,7 @@ func TestWalkBatchesCheckIgnoreByDepthAndSkipsTrackedFiles(t *testing.T) {
 	}
 	write(t, dir, "pkg/03/.gitignore", "local.log\n!keep.tmp\n")
 	testGit(t, dir, "add", ".gitignore", "pkg")
-	testGit(t, dir, "commit", "-m", "initial")
+	commit(t, dir)
 
 	// 未追跡ファイルと無視ファイルを混在させる。
 	write(t, dir, "pkg/03/local.log", "ネストしたgitignoreで無視")
@@ -71,7 +71,7 @@ func TestWalkSkipsCheckIgnoreForTrackedOnlyLeafDirectories(t *testing.T) {
 		write(t, dir, fmt.Sprintf("d%d/a.txt", i), "tracked")
 	}
 	testGit(t, dir, "add", ".")
-	testGit(t, dir, "commit", "-m", "initial")
+	commit(t, dir)
 
 	checkIgnoreCalls := map[int]int{}
 	prevStage := ""
