@@ -163,59 +163,69 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 		entries[pathKey(name)] = entry
 		r.progress.file(entry)
 	}
-	var walk func(string) error
-	walk = func(dir string) error {
-		if err := r.safeParents(filepath.Join(dir, "_")); err != nil {
-			return err
-		}
-		file, err := r.fs.Open(dir)
-		if err != nil {
-			return fail("unreadable_directory", "ディレクトリを開けません。", dir)
-		}
-		children, readErr := file.ReadDir(-1)
-		file.Close()
-		if readErr != nil {
-			return fail("unreadable_directory", "ディレクトリを読み取れません。", dir)
-		}
-		sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
-		names := []string{}
-		for _, child := range children {
-			name := filepath.ToSlash(filepath.Join(dir, child.Name()))
-			if r.protected(name) {
+	// 同じ深さのディレクトリ直下をまとめて check-ignore へ渡し、無視された配下へは進入しない。
+	queue := []string{"."}
+	for len(queue) > 0 {
+		var candidates []string
+		for _, dir := range queue {
+			if err := r.safeParents(filepath.Join(dir, "_")); err != nil {
+				s.Issues = append(s.Issues, describeError(err))
 				continue
 			}
-			if inSubmodule(name) {
-				continue
-			}
-			info, err := r.fs.Lstat(name)
+			file, err := r.fs.Open(dir)
 			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					s.Issues = append(s.Issues, Issue{Code: "snapshot_changed", Message: "列挙中に対象を確認できなくなりました。", Path: name})
-				} else {
-					s.Issues = append(s.Issues, Issue{Code: "unreadable_path", Message: "対象を読み取れません。", Path: name})
-				}
+				s.Issues = append(s.Issues, describeError(fail("unreadable_directory", "ディレクトリを開けません。", dir)))
 				continue
 			}
-			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-				name += "/"
+			children, readErr := file.ReadDir(-1)
+			file.Close()
+			if readErr != nil {
+				s.Issues = append(s.Issues, describeError(fail("unreadable_directory", "ディレクトリを読み取れません。", dir)))
+				continue
 			}
-			names = append(names, name)
+			sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
+			for _, child := range children {
+				name := filepath.ToSlash(filepath.Join(dir, child.Name()))
+				if r.protected(name) {
+					continue
+				}
+				if inSubmodule(name) {
+					continue
+				}
+				info, err := r.fs.Lstat(name)
+				if err != nil {
+					if errors.Is(err, fs.ErrNotExist) {
+						s.Issues = append(s.Issues, Issue{Code: "snapshot_changed", Message: "列挙中に対象を確認できなくなりました。", Path: name})
+					} else {
+						s.Issues = append(s.Issues, Issue{Code: "unreadable_path", Message: "対象を読み取れません。", Path: name})
+					}
+					continue
+				}
+				if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+					candidates = append(candidates, name+"/")
+					continue
+				}
+				if _, exists := entries[pathKey(name)]; exists {
+					continue
+				}
+				candidates = append(candidates, name)
+			}
 		}
-		ignored, err := r.ignored(names)
+		if len(candidates) == 0 {
+			break
+		}
+		ignored, err := r.ignored(candidates)
 		if err != nil {
-			return err
+			s.Issues = append(s.Issues, describeError(err))
+			break
 		}
-		for _, name := range names {
+		var nextQueue []string
+		for _, name := range candidates {
 			if ignored[name] {
 				continue
 			}
 			if strings.HasSuffix(name, "/") {
-				if err := walk(strings.TrimSuffix(name, "/")); err != nil {
-					s.Issues = append(s.Issues, describeError(err))
-				}
-				continue
-			}
-			if _, exists := entries[pathKey(name)]; exists {
+				nextQueue = append(nextQueue, strings.TrimSuffix(name, "/"))
 				continue
 			}
 			entry, err := r.readEntry(name)
@@ -233,10 +243,7 @@ func (r *repository) collect(previous []Entry) (snapshot, error) {
 				s.Changes = append(s.Changes, GitChange{name, "??"})
 			}
 		}
-		return nil
-	}
-	if err := walk("."); err != nil {
-		s.Issues = append(s.Issues, describeError(err))
+		queue = nextQueue
 	}
 	// 未追跡ファイルは上でリンクをたどらず列挙済み。Gitには追跡済みだけを問い合わせる。
 	data, err := r.git(nil, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=all", "--no-renames")
