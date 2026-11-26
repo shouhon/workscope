@@ -2,7 +2,22 @@
 
 作業開始時からの変化を照合し、指定した範囲を外れた変更を見つける、Windows向けのコマンドラインツールです。
 
-AIに修正を任せるときなどに、開始前からある未コミット変更と、作業中に加わった変更を区別できます。たとえば `src` だけを変更する予定なら、別のファイルが再編集されていないかを確認できます。
+AIに修正を任せるときなどに、開始前からある未コミット変更と、作業中に加わった変更を区別できます。
+
+## 利用場面と得られる結果
+
+たとえば、AIに `src` の修正を任せる前に開始状態を記録します。作業後に照合すると、以前から変更していた `config.toml` が作業中に再編集された場合も、範囲外の変更として表示されます。
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 320
+---
+flowchart TD
+    situation["AIに src だけの修正を任せたい<br/>config.toml には作業前から変更がある"] --> action["作業前に workscope begin --allow src<br/>作業後に workscope check"]
+    action --> result["config.toml の再編集を検出<br/>範囲外の変更として報告（終了コード 1）"]
+```
 
 [導入](#インストール) · [使い方](#使い方) · [利用ガイド](docs/usage.md) · [Releases](https://github.com/shouhon/workscope/releases) · [MITライセンス](LICENSE)
 
